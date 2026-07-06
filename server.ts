@@ -96,7 +96,7 @@ const runtimeState: RuntimeSnapshot = {
   agent: {
     status: 'stopped',
     mode: zenConfig.apiKey ? 'remote' : 'local',
-    label: zenConfig.apiKey ? 'Ready to use the remote model.' : 'Local fallback mode is active.',
+    label: zenConfig.apiKey ? 'Listo para usar el modelo remoto.' : 'Modo local de respaldo activo.',
     lastStartedAt: null,
   },
   opencode: {
@@ -105,7 +105,7 @@ const runtimeState: RuntimeSnapshot = {
     available: false,
     version: null,
     commandPath: null,
-    message: 'Checking OpenCode runtime...',
+    message: 'Comprobando OpenCode…',
     lastExitCode: null,
     lastStartedAt: null,
   },
@@ -179,7 +179,7 @@ async function refreshOpenCodeAvailability() {
   if (isInstalling) {
     runtimeState.opencode.status = 'installing';
     if (!runtimeState.opencode.message) {
-      runtimeState.opencode.message = 'Installing OpenCode using npm...';
+      runtimeState.opencode.message = 'Instalando OpenCode con npm…';
     }
     return;
   }
@@ -187,15 +187,15 @@ async function refreshOpenCodeAvailability() {
   if (isRunning) {
     runtimeState.opencode.status = 'running';
     runtimeState.opencode.message = binaryPath
-      ? 'OpenCode process is running.'
-      : 'OpenCode runtime is running.';
+      ? 'OpenCode está ejecutándose.'
+      : 'OpenCode está ejecutándose.';
     return;
   }
 
   runtimeState.opencode.status = 'stopped';
   runtimeState.opencode.message = binaryPath
-    ? `OpenCode detected${version ? ` (${version})` : ''}.`
-    : 'OpenCode is not installed. Start will run a real npm installation.';
+    ? `OpenCode detectado${version ? ` (${version})` : ''}.`
+    : 'OpenCode no está instalado. Al iniciarlo se instala solo.';
 }
 
 function appendOpenCodeMessage(message: string) {
@@ -471,7 +471,7 @@ Return JSON only.`,
         }
 
         runtimeState.agent.mode = 'local';
-        runtimeState.agent.label = 'Remote model unavailable. Local fallback mode is active.';
+        runtimeState.agent.label = 'Modelo remoto no disponible. Modo local de respaldo activo.';
         return buildLocalAgentAction(input);
       }
 
@@ -480,12 +480,12 @@ Return JSON only.`,
 
       if (!assistantMessage) {
         runtimeState.agent.mode = 'local';
-        runtimeState.agent.label = 'Remote model returned no content. Local fallback mode is active.';
+        runtimeState.agent.label = 'El modelo remoto no devolvió contenido. Modo local de respaldo activo.';
         return buildLocalAgentAction(input);
       }
 
       runtimeState.agent.mode = 'remote';
-      runtimeState.agent.label = 'Remote model online.';
+      runtimeState.agent.label = 'Modelo remoto en línea.';
       return assistantMessage;
     } catch (error: any) {
       console.error('Zen Error:', error.message, '| cause:', error?.cause?.code || error?.cause?.message || 'n/a', '| url:', `${zenConfig.baseUrl}/chat/completions`);
@@ -496,13 +496,13 @@ Return JSON only.`,
       }
 
       runtimeState.agent.mode = 'local';
-      runtimeState.agent.label = 'Remote model unreachable. Local fallback mode is active.';
+      runtimeState.agent.label = 'No se pudo contactar el modelo remoto. Modo local de respaldo activo.';
       return buildLocalAgentAction(input);
     }
   }
 
   runtimeState.agent.mode = 'local';
-  runtimeState.agent.label = 'Remote model unavailable after retries. Local fallback mode is active.';
+  runtimeState.agent.label = 'Modelo remoto no disponible tras varios intentos. Modo local de respaldo activo.';
   return buildLocalAgentAction(input);
 }
 
@@ -520,8 +520,8 @@ function startAgentRuntime() {
   runtimeState.agent.lastStartedAt = new Date().toISOString();
   runtimeState.agent.mode = zenConfig.apiKey ? 'remote' : 'local';
   runtimeState.agent.label = zenConfig.apiKey
-    ? 'Remote model online.'
-    : 'Local fallback mode is active.';
+    ? 'Modelo remoto en línea.'
+    : 'Modo local de respaldo activo.';
 }
 
 async function startOpenCodeInstall() {
@@ -532,7 +532,7 @@ async function startOpenCodeInstall() {
   runtimeState.opencode.status = 'installing';
   runtimeState.opencode.lastStartedAt = new Date().toISOString();
   runtimeState.opencode.lastExitCode = null;
-  runtimeState.opencode.message = 'Installing OpenCode using npm...';
+  runtimeState.opencode.message = 'Instalando OpenCode con npm…';
 
   const command = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   opencodeInstallProcess = spawn(command, ['install', '-g', 'opencode-ai'], {
@@ -561,8 +561,8 @@ async function startOpenCodeInstall() {
     runtimeState.opencode.lastExitCode = code ?? null;
     await refreshOpenCodeAvailability();
     runtimeState.opencode.message = code === 0
-      ? 'OpenCode installed successfully. Press Start again to launch it.'
-      : `OpenCode installation failed with exit code ${code ?? 'unknown'}.`;
+      ? 'OpenCode instalado con éxito. Tocá Iniciar de nuevo para abrirlo.'
+      : `La instalación de OpenCode falló (código ${code ?? 'desconocido'}).`;
   });
 }
 
@@ -582,7 +582,7 @@ async function startOpenCodeRuntime() {
   runtimeState.opencode.status = 'running';
   runtimeState.opencode.lastStartedAt = new Date().toISOString();
   runtimeState.opencode.lastExitCode = null;
-  runtimeState.opencode.message = 'Launching OpenCode...';
+  runtimeState.opencode.message = 'Abriendo OpenCode…';
 
   opencodeRuntimeProcess = spawn(binaryPath, [], {
     cwd: DEFAULT_CWD,
@@ -611,8 +611,8 @@ async function startOpenCodeRuntime() {
     runtimeState.opencode.status = 'stopped';
     await refreshOpenCodeAvailability();
     runtimeState.opencode.message = code === 0
-      ? 'OpenCode exited normally.'
-      : `OpenCode exited with code ${code ?? 'unknown'}.`;
+      ? 'OpenCode se cerró normalmente.'
+      : `OpenCode se cerró con código ${code ?? 'desconocido'}.`;
   });
 }
 
@@ -863,8 +863,8 @@ async function startServer() {
     // Refleja el nuevo estado en el runtime sin reiniciar el agente.
     runtimeState.agent.mode = zenConfig.apiKey ? 'remote' : 'local';
     runtimeState.agent.label = zenConfig.apiKey
-      ? 'Remote model online.'
-      : 'Local fallback mode is active.';
+      ? 'Modelo remoto en línea.'
+      : 'Modo local de respaldo activo.';
 
     res.json({
       success: true,

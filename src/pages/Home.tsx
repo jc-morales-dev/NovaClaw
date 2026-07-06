@@ -19,7 +19,7 @@ const DEFAULT_RUNTIME_STATUS: RuntimeSnapshot = {
   agent: {
     status: 'stopped',
     mode: 'local',
-    label: 'Ready',
+    label: 'Listo',
   },
   opencode: {
     status: 'stopped',
@@ -27,7 +27,7 @@ const DEFAULT_RUNTIME_STATUS: RuntimeSnapshot = {
     available: false,
     version: null,
     commandPath: null,
-    message: 'Checking OpenCode runtime...',
+    message: 'Comprobando OpenCode…',
     lastExitCode: null,
   },
   terminal: {
@@ -89,20 +89,20 @@ export default function Home() {
 
   const opencodeStatusLabel = useMemo(() => {
     if (opencodeInstalling) {
-      return 'Installing';
+      return 'Instalando…';
     }
     if (opencodeRunning) {
-      return 'Running';
+      return 'Ejecutándose';
     }
     if (runtimeStatus.opencode.installed) {
-      return 'Installed';
+      return 'Instalado';
     }
-    return 'Not installed';
+    return 'No instalado';
   }, [opencodeInstalling, opencodeRunning, runtimeStatus.opencode.installed]);
 
   const terminalStatusLabel = runtimeStatus.terminal.cwd
-    ? `Shell ready · ${runtimeStatus.terminal.cwd.replace(/\\/g, '/')}`
-    : 'Shell ready';
+    ? `Shell lista · ${runtimeStatus.terminal.cwd.replace(/\\/g, '/')}`
+    : 'Shell lista';
 
   async function handleStartAgent() {
     setIsStartingAgent(true);
