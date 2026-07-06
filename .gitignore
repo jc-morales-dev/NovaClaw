@@ -1,0 +1,22 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+*.jks
+*.keystore
+android/app/*.jks
+android/app/*.keystore
+
+# NovaClaw: secretos y artefactos generados
+android-native/keystore.properties
+keystore.properties
+.gradle/
+local.properties
+android-native/agent-build/
+android-native/app/src/main/assets/agent.zip
+.playwright-mcp/
+tmp/

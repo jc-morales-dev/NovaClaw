@@ -1,0 +1,38 @@
+<!--
+  Merge these entries into android/app/src/main/AndroidManifest.xml once
+  the Capacitor Android project is generated (npx cap add android).
+
+  - RUN_COMMAND permission is required to send shell commands to Termux.
+  - <queries> is required on Android 11+ so our app can resolve Termux
+    service components (package visibility).
+  - INTERNET is obvious. FOREGROUND_SERVICE is needed if the installer
+    runs as a long-lived operation.
+-->
+<manifest>
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+
+    <queries>
+        <package android:name="com.termux" />
+        <intent>
+            <action android:name="com.termux.RUN_COMMAND" />
+        </intent>
+    </queries>
+
+    <application>
+        <!--
+          Register the Capacitor plugins in MainActivity.kt:
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  registerPlugin(TermuxPlugin::class.java)
+                  registerPlugin(OpenCodeInstallerPlugin::class.java)
+                  registerPlugin(SecureKeyPlugin::class.java)
+                  super.onCreate(savedInstanceState)
+              }
+        -->
+    </application>
+
+</manifest>

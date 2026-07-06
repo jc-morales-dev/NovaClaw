@@ -1,0 +1,12 @@
+{
+  "name": "NovaClaw",
+  "description": "Agentic coding assistant with embedded Linux terminal and OpenCode integration. Web prototype of the future Android APK.",
+  "version": "0.1.0",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "agent-loop",
+    "terminal-execution",
+    "filesystem-tools",
+    "approval-gate"
+  ]
+}
