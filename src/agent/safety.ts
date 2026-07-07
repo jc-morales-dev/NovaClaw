@@ -19,6 +19,8 @@ const SENSITIVE_COMMAND_PATTERNS = [
   /\byarn\s+add\b/i,
   /\bpip\s+install\b/i,
   /\bapt(?:-get)?\s+install\b/i,
+  /\bpkg\s+(?:install|add|uninstall|remove)\b/i,
+  /\bapk\s+add\b/i,
   /\bpacman\s+-S\b/i,
   /\bcurl\b/i,
   /\bwget\b/i,

@@ -11,10 +11,25 @@ import {
   EyeOff,
   CheckCircle2,
   AlertCircle,
+  FolderOpen,
+  Camera,
+  MapPin,
+  Users,
+  Calendar,
+  Mic,
+  Plug,
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { translations } from '../translations';
 import { platform, type ProviderConfig } from '../platform';
+import {
+  getConnectors,
+  requestConnector,
+  onConnectorsChanged,
+  hasNativeConnectors,
+  type ConnectorKey,
+  type ConnectorState,
+} from '../connectors';
 
 export default function Settings() {
   const navigate = useNavigate();
@@ -37,6 +52,10 @@ export default function Settings() {
   const [providerSaved, setProviderSaved] = useState(false);
   const [providerError, setProviderError] = useState('');
 
+  // Conectores del teléfono (permisos reales de Android).
+  const [connectors, setConnectors] = useState<ConnectorState>(() => getConnectors());
+  const nativeConnectors = hasNativeConnectors();
+
   async function loadConfig() {
     try {
       const c = await platform.getConfig();
@@ -49,6 +68,28 @@ export default function Settings() {
   useEffect(() => {
     loadConfig();
   }, []);
+
+  // Refrescar conectores al montar, al volver de un permiso, y periódicamente
+  // (cubre el regreso desde la pantalla del sistema de "todos los archivos").
+  useEffect(() => {
+    const refresh = () => setConnectors(getConnectors());
+    refresh();
+    const unsub = onConnectorsChanged(refresh);
+    const onVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    document.addEventListener('visibilitychange', onVisible);
+    const interval = window.setInterval(refresh, 2500);
+    return () => {
+      unsub();
+      document.removeEventListener('visibilitychange', onVisible);
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  function handleConnector(key: ConnectorKey) {
+    requestConnector(key);
+    // Reintento de lectura tras el diálogo (por si el evento nativo se pierde).
+    window.setTimeout(() => setConnectors(getConnectors()), 800);
+  }
 
   const openModal = (name: string) => {
     if (name === 'provider' && config) {
@@ -146,6 +187,100 @@ export default function Settings() {
           </p>
         </SettingsSection>
 
+        {/* Conectores — permisos del teléfono que activa el usuario */}
+        <SettingsSection icon={<Plug size={18} />} title={isSpanish ? 'Conectores' : 'Connectors'}>
+          <SettingsGroup>
+            <ConnectorRow
+              icon={<FolderOpen size={20} className="text-[#FFB25C]" />}
+              title={isSpanish ? 'Archivos del teléfono' : 'Phone files'}
+              desc={isSpanish ? 'El agente puede buscar, leer y organizar tus archivos' : 'The agent can search, read and organize your files'}
+              on={connectors.files || connectors.allFiles}
+              onConnect={() => handleConnector('files')}
+              isSpanish={isSpanish}
+            />
+            <ConnectorRow
+              icon={<Camera size={20} className="text-[#FFB25C]" />}
+              title={isSpanish ? 'Cámara' : 'Camera'}
+              desc={isSpanish ? 'Tomar y analizar fotos' : 'Take and analyze photos'}
+              on={connectors.camera}
+              onConnect={() => handleConnector('camera')}
+              isSpanish={isSpanish}
+            />
+            <ConnectorRow
+              icon={<MapPin size={20} className="text-[#FFB25C]" />}
+              title={isSpanish ? 'Ubicación' : 'Location'}
+              desc={isSpanish ? 'Saber dónde estás para tareas con contexto' : 'Know where you are for context-aware tasks'}
+              on={connectors.location}
+              onConnect={() => handleConnector('location')}
+              isSpanish={isSpanish}
+            />
+            <ConnectorRow
+              icon={<Users size={20} className="text-[#FFB25C]" />}
+              title={isSpanish ? 'Contactos' : 'Contacts'}
+              desc={isSpanish ? 'Buscar personas para mensajes y agenda' : 'Look up people for messages and scheduling'}
+              on={connectors.contacts}
+              onConnect={() => handleConnector('contacts')}
+              isSpanish={isSpanish}
+            />
+            <ConnectorRow
+              icon={<Calendar size={20} className="text-[#FFB25C]" />}
+              title={isSpanish ? 'Calendario' : 'Calendar'}
+              desc={isSpanish ? 'Ver y crear eventos' : 'View and create events'}
+              on={connectors.calendar}
+              onConnect={() => handleConnector('calendar')}
+              isSpanish={isSpanish}
+            />
+            <ConnectorRow
+              icon={<Mic size={20} className="text-[#FFB25C]" />}
+              title={isSpanish ? 'Micrófono' : 'Microphone'}
+              desc={isSpanish ? 'Dictado y notas de voz' : 'Dictation and voice notes'}
+              on={connectors.microphone}
+              onConnect={() => handleConnector('microphone')}
+              isSpanish={isSpanish}
+            />
+          </SettingsGroup>
+
+          {/* Acceso total a archivos (el "modo AnyClaw") */}
+          <div className="mt-2.5 rounded-2xl border border-[#FF7A1A]/25 bg-[#FF7A1A]/[0.06] p-4">
+            <div className="flex items-start gap-3">
+              <FolderOpen size={20} className="text-[#FFB25C] mt-0.5 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <h3 className="font-semibold text-zinc-100 text-[15px]">
+                  {isSpanish ? 'Acceso total al teléfono' : 'Full phone access'}
+                </h3>
+                <p className="text-zinc-400 text-[12.5px] mt-0.5 leading-relaxed">
+                  {isSpanish
+                    ? 'Deja que el agente revise, encuentre y gestione cualquier archivo del teléfono. Ideal para pedirle cosas como "buscá el PDF que descargué ayer".'
+                    : 'Let the agent review, find and manage any file on the phone. Great for asking "find the PDF I downloaded yesterday".'}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => handleConnector('allFiles')}
+                  className={`mt-3 px-4 py-2 rounded-xl text-[13px] font-semibold transition-colors ${
+                    connectors.allFiles
+                      ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                      : 'bg-[#FF7A1A] text-[#1A0E02] hover:brightness-110'
+                  }`}
+                >
+                  {connectors.allFiles
+                    ? (isSpanish ? '✓ Activado' : '✓ Enabled')
+                    : (isSpanish ? 'Activar acceso total' : 'Enable full access')}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <p className="text-zinc-600 text-xs px-2 mt-2 leading-relaxed">
+            {!nativeConnectors
+              ? (isSpanish
+                  ? 'Los conectores funcionan dentro de la app instalada en el teléfono.'
+                  : 'Connectors work inside the app installed on the phone.')
+              : (isSpanish
+                  ? 'Activá solo lo que quieras. Podés revocar los permisos cuando quieras desde los ajustes del sistema.'
+                  : 'Enable only what you want. You can revoke permissions anytime from system settings.')}
+          </p>
+        </SettingsSection>
+
         {/* Preferences */}
         <SettingsSection icon={<Info size={18} />} title={t.preferences}>
           <SettingsGroup>
@@ -170,7 +305,7 @@ export default function Settings() {
         </SettingsSection>
 
         <div className="pt-4 pb-8 flex flex-col items-center">
-          <p className="text-zinc-600 text-sm font-medium mb-6">NovaClaw v2.1.0</p>
+          <p className="text-zinc-600 text-sm font-medium mb-6">NovaClaw v2.2.0</p>
         </div>
       </div>
 
@@ -342,6 +477,46 @@ export default function Settings() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function ConnectorRow({
+  icon,
+  title,
+  desc,
+  on,
+  onConnect,
+  isSpanish,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  desc: string;
+  on: boolean;
+  onConnect: () => void;
+  isSpanish: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between p-4 bg-zinc-900">
+      <div className="flex items-start gap-3 min-w-0">
+        <div className="mt-0.5 shrink-0">{icon}</div>
+        <div className="min-w-0">
+          <h3 className="font-semibold text-zinc-100 text-[15px]">{title}</h3>
+          <p className="text-zinc-500 text-[12px] mt-0.5 leading-snug">{desc}</p>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onConnect}
+        disabled={on}
+        className={`shrink-0 ml-3 px-3.5 py-2 rounded-xl text-[13px] font-semibold transition-colors ${
+          on
+            ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+            : 'bg-[#FF7A1A]/12 text-[#FFC58A] border border-[#FF7A1A]/30 hover:bg-[#FF7A1A]/20'
+        }`}
+      >
+        {on ? (isSpanish ? '✓ Activo' : '✓ On') : (isSpanish ? 'Conectar' : 'Connect')}
+      </button>
     </div>
   );
 }

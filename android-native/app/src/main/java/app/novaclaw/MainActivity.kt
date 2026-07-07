@@ -21,6 +21,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var runtime: RuntimeManager
     private lateinit var shizuku: ShizukuManager
+    private lateinit var connectors: ConnectorBridge
     @Volatile private var shizukuStatus = ShizukuManager.Status.NOT_RUNNING
     private val isRunning = AtomicBoolean(false)
 
@@ -35,6 +36,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         runtime = RuntimeManager(this)
+        connectors = ConnectorBridge(this)
         // Shizuku es opcional y silencioso: si no está, la app funciona igual y
         // el usuario jamás se entera de que existe.
         shizuku = ShizukuManager { status -> shizukuStatus = status }
@@ -129,6 +131,8 @@ class MainActivity : AppCompatActivity() {
         val wv = binding.webView
         wv.settings.javaScriptEnabled = true
         wv.settings.domStorageEnabled = true
+        // Puente de conectores: la UI pide permisos reales vía window.NovaClawNative.
+        wv.addJavascriptInterface(connectors, "NovaClawNative")
         // Mismo fondo que la UI para que no haya flash blanco al aparecer.
         wv.setBackgroundColor(android.graphics.Color.parseColor("#0B0908"))
         wv.webViewClient = object : WebViewClient() {
@@ -145,6 +149,31 @@ class MainActivity : AppCompatActivity() {
         // INVISIBLE (no GONE) para que el WebView renderice detrás del splash.
         wv.visibility = View.INVISIBLE
         wv.loadUrl("http://127.0.0.1:$AGENT_PORT")
+    }
+
+    /** Tras conceder/denegar un permiso de conector, avisa a la UI para refrescar. */
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == ConnectorBridge.REQUEST_CODE) notifyConnectorsChanged()
+    }
+
+    /** Al volver de la pantalla de "Acceso a todos los archivos", refresca la UI. */
+    override fun onResume() {
+        super.onResume()
+        if (binding.webView.visibility == View.VISIBLE) notifyConnectorsChanged()
+    }
+
+    private fun notifyConnectorsChanged() {
+        runOnUiThread {
+            binding.webView.evaluateJavascript(
+                "window.dispatchEvent(new Event('novaclaw-connectors-changed'));",
+                null,
+            )
+        }
     }
 
     override fun onDestroy() {
