@@ -9,8 +9,11 @@ import type { Server as HttpServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 
 import { createAgentRuntime, createAgentSession, type AgentSession } from './src/agent/runtime';
+import { createNativeAgentRuntime } from './src/agent/nativeAgent';
 import { getEmbeddedZenKey } from './src/agent/embeddedKey';
 import { createLocalToolExecutor } from './src/agent/tools';
+import { PROVIDERS, getProvider } from './src/agent/providers';
+import { verifyAndListModels } from './src/agent/modelClient';
 
 // Configuración del proveedor de IA. Mutable en runtime para que la pantalla de
 // Ajustes pueda cambiar baseUrl/apiKey/model SIN reiniciar el agente ni recompilar.
@@ -19,11 +22,18 @@ import { createLocalToolExecutor } from './src/agent/tools';
 //   2. Key embebida en el build (la que usa el APK del usuario final)
 //   3. Vacío → arranca el fallback heurístico local
 const zenConfig = {
+  provider: process.env.NOVACLAW_PROVIDER || 'opencode-zen',
   apiKey: process.env.ZEN_API_KEY || getEmbeddedZenKey() || '',
   // minimax-m2.5-free fue discontinuado. Default a un modelo vigente y económico.
   baseUrl: process.env.ZEN_BASE_URL ?? 'https://opencode.ai/zen/v1',
   model: process.env.ZEN_MODEL ?? 'claude-haiku-4-5',
 };
+
+/** Mantiene baseUrl coherente con el proveedor elegido. */
+function syncBaseUrlToProvider() {
+  const provider = getProvider(zenConfig.provider);
+  if (provider) zenConfig.baseUrl = provider.baseUrl;
+}
 const DEFAULT_CWD = process.cwd();
 // Archivo persistente de config (fuera de git). RuntimeManager lo lee al arrancar;
 // acá lo escribimos cuando el usuario guarda desde Ajustes, así sobrevive reinicios.
@@ -37,9 +47,11 @@ function loadConfigFromFile() {
   try {
     if (!fs.existsSync(NOVACLAW_CONFIG_PATH)) return;
     const raw = JSON.parse(fs.readFileSync(NOVACLAW_CONFIG_PATH, 'utf8'));
+    if (typeof raw.provider === 'string' && raw.provider.trim()) zenConfig.provider = raw.provider.trim();
     if (typeof raw.baseUrl === 'string' && raw.baseUrl.trim()) zenConfig.baseUrl = raw.baseUrl.trim();
     if (typeof raw.apiKey === 'string' && raw.apiKey.trim()) zenConfig.apiKey = raw.apiKey.trim();
     if (typeof raw.model === 'string' && raw.model.trim()) zenConfig.model = raw.model.trim();
+    syncBaseUrlToProvider();
   } catch (error: any) {
     console.error('No se pudo leer novaclaw.config.json:', error?.message);
   }
@@ -50,7 +62,7 @@ function saveConfigToFile() {
   try {
     fs.writeFileSync(
       NOVACLAW_CONFIG_PATH,
-      JSON.stringify({ baseUrl: zenConfig.baseUrl, apiKey: zenConfig.apiKey, model: zenConfig.model }, null, 2),
+      JSON.stringify({ provider: zenConfig.provider, baseUrl: zenConfig.baseUrl, apiKey: zenConfig.apiKey, model: zenConfig.model }, null, 2),
       'utf8',
     );
   } catch (error: any) {
@@ -682,13 +694,31 @@ function formatDirectoryEntries(targetPath: string): string {
     .join('  ');
 }
 
-const agentRuntime = createAgentRuntime({
+// Runtime local heurístico (sin API key): protocolo simple de respaldo.
+const localAgentRuntime = createAgentRuntime({
   workspaceRoot: DEFAULT_CWD,
   callModel: callZenAgent,
   executeToolCall: createLocalToolExecutor(),
-  // Más pasos por turno: el agente encadena más herramientas antes de rendirse.
   maxIterations: 18,
 });
+
+// Runtime PRO con function-calling nativo (cuando hay API key). Es el que hace
+// que el agente se sienta como Codex/Claude Code: encadena herramientas reales.
+const nativeAgentRuntime = createNativeAgentRuntime({
+  workspaceRoot: DEFAULT_CWD,
+  getConfig: () => ({ providerId: zenConfig.provider, apiKey: zenConfig.apiKey, model: zenConfig.model }),
+  executeToolCall: createLocalToolExecutor(),
+  onRemote: (label) => {
+    runtimeState.agent.mode = 'remote';
+    runtimeState.agent.label = label;
+  },
+  maxIterations: 18,
+});
+
+/** Elige el runtime: nativo si hay key, local heurístico si no. */
+function pickRuntime() {
+  return zenConfig.apiKey ? nativeAgentRuntime : localAgentRuntime;
+}
 
 // ── Terminal PTY real (WebSocket) ──────────────────────────────────────────
 // Usa el truco de `script` (util-linux) para asignar un PTY real SIN código
@@ -826,7 +856,7 @@ async function startServer() {
 
     try {
       const session = getOrCreateSession(sessionId);
-      const result = await agentRuntime.runUserTurn(session, message);
+      const result = await pickRuntime().runUserTurn(session, message);
       runtimeState.terminal.cwd = session.cwd;
       saveSessionsToDisk();
       return res.json({ events: result.events });
@@ -848,7 +878,7 @@ async function startServer() {
 
     try {
       const session = getOrCreateSession(sessionId);
-      const result = await agentRuntime.resolveApproval(session, Boolean(approved));
+      const result = await pickRuntime().resolveApproval(session, Boolean(approved));
       runtimeState.terminal.cwd = session.cwd;
       saveSessionsToDisk();
       return res.json({ events: result.events });
@@ -877,6 +907,7 @@ async function startServer() {
   // NUNCA devolvemos la apiKey; solo si está seteada.
   app.get('/api/config', (_req, res) => {
     res.json({
+      provider: zenConfig.provider,
       baseUrl: zenConfig.baseUrl,
       model: zenConfig.model,
       hasApiKey: !!zenConfig.apiKey,
@@ -885,8 +916,12 @@ async function startServer() {
   });
 
   app.post('/api/config', (req, res) => {
-    const { baseUrl, apiKey, model } = req.body ?? {};
+    const { provider, baseUrl, apiKey, model } = req.body ?? {};
     // Solo se actualizan los campos provistos. Un apiKey === '' limpia la key.
+    if (typeof provider === 'string' && provider.trim() && getProvider(provider.trim())) {
+      zenConfig.provider = provider.trim();
+      syncBaseUrlToProvider();
+    }
     if (typeof baseUrl === 'string' && baseUrl.trim()) zenConfig.baseUrl = baseUrl.trim();
     if (typeof model === 'string' && model.trim()) zenConfig.model = model.trim();
     if (typeof apiKey === 'string') zenConfig.apiKey = apiKey.trim();
@@ -905,11 +940,40 @@ async function startServer() {
 
     res.json({
       success: true,
+      provider: zenConfig.provider,
       baseUrl: zenConfig.baseUrl,
       model: zenConfig.model,
       hasApiKey: !!zenConfig.apiKey,
       mode: zenConfig.apiKey ? 'remote' : 'local',
     });
+  });
+
+  // Lista de proveedores disponibles para la UI.
+  app.get('/api/providers', (_req, res) => {
+    res.json({
+      providers: PROVIDERS.map((p) => ({
+        id: p.id,
+        label: p.label,
+        needsKey: p.needsKey,
+        keyHint: p.keyHint,
+        note: p.note ?? null,
+      })),
+      current: zenConfig.provider,
+    });
+  });
+
+  // Verificación real: pega la key, elige proveedor, verificamos contra su
+  // /models y devolvemos la lista viva de modelos. Nada de humo.
+  app.post('/api/provider/verify', async (req, res) => {
+    const { provider, apiKey } = req.body ?? {};
+    const providerId = typeof provider === 'string' ? provider : zenConfig.provider;
+    const key = typeof apiKey === 'string' && apiKey.trim() ? apiKey.trim() : zenConfig.apiKey;
+    try {
+      const result = await verifyAndListModels(providerId, key);
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ ok: false, models: [], error: error?.message ?? 'Error verificando.' });
+    }
   });
 
   app.get('/api/chat/history', (req, res) => {

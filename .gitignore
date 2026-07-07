@@ -20,3 +20,9 @@ android-native/agent-build/
 android-native/app/src/main/assets/agent.zip
 .playwright-mcp/
 tmp/
+
+# NovaClaw runtime (no versionar)
+novaclaw.config.json
+novaclaw.sessions.json
+_test_*
+_server_test.log

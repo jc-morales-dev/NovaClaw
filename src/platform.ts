@@ -30,8 +30,11 @@ export type SessionHistoryEntry = { role: 'user' | 'assistant' | 'system'; conte
 export type PendingApprovalSnapshot = { summary: string; reason: string; toolCall: { tool: string; arguments: Record<string, unknown> } } | null;
 type ChatHistoryResponse = { history: SessionHistoryEntry[]; pendingApproval: PendingApprovalSnapshot };
 
-export type ProviderConfig = { baseUrl: string; model: string; hasApiKey: boolean; mode: 'remote' | 'local' };
-export type ProviderConfigUpdate = { baseUrl?: string; model?: string; apiKey?: string };
+export type ProviderConfig = { provider: string; baseUrl: string; model: string; hasApiKey: boolean; mode: 'remote' | 'local' };
+export type ProviderConfigUpdate = { provider?: string; baseUrl?: string; model?: string; apiKey?: string };
+export type ProviderInfo = { id: string; label: string; needsKey: boolean; keyHint: string; note: string | null };
+export type ModelInfo = { id: string; label: string; tier?: 'premium' | 'value' };
+export type VerifyResult = { ok: boolean; models: ModelInfo[]; error?: string };
 
 type RuntimeSnapshot = {
  agent: { status: 'stopped' | 'running'; mode: 'remote' | 'local'; label: string };
@@ -59,6 +62,8 @@ interface PlatformAdapter {
  hasApiKey(): Promise<boolean>;
  getConfig(): Promise<ProviderConfig>;
  saveConfig(update: ProviderConfigUpdate): Promise<ProviderConfig>;
+ getProviders(): Promise<{ providers: ProviderInfo[]; current: string }>;
+ verifyProvider(provider: string, apiKey: string): Promise<VerifyResult>;
 }
 
 // ── Detección de Capacitor ────────────────────────────────────────────────────
@@ -111,6 +116,11 @@ const webAdapter: PlatformAdapter = {
  async saveConfig(update) {
  const r = await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(update) });
  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error ?? 'No se pudo guardar la configuración.'); }
+ return r.json();
+ },
+ async getProviders() { const r = await fetch('/api/providers'); return r.json(); },
+ async verifyProvider(provider, apiKey) {
+ const r = await fetch('/api/provider/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, apiKey }) });
  return r.json();
  },
 };
@@ -411,12 +421,14 @@ const capacitorAdapter: PlatformAdapter = {
 
  // En Capacitor la config vive en el Keystore/embedded; exponemos una vista compatible.
  async getConfig(): Promise<ProviderConfig> {
- return { baseUrl: ZEN_API_URL.replace('/chat/completions', ''), model: ZEN_MODEL, hasApiKey: await hasApiKeyNative(), mode: (await hasApiKeyNative()) ? 'remote' : 'local' };
+ return { provider: 'opencode-zen', baseUrl: ZEN_API_URL.replace('/chat/completions', ''), model: ZEN_MODEL, hasApiKey: await hasApiKeyNative(), mode: (await hasApiKeyNative()) ? 'remote' : 'local' };
  },
  async saveConfig(update: ProviderConfigUpdate): Promise<ProviderConfig> {
  if (typeof update.apiKey === 'string') await saveApiKeyNative(update.apiKey);
  return capacitorAdapter.getConfig();
  },
+ async getProviders() { return { providers: [], current: 'opencode-zen' }; },
+ async verifyProvider() { return { ok: false, models: [], error: 'No disponible en este modo.' }; },
 };
 
 // ── Export ────────────────────────────────────────────────────────────────────

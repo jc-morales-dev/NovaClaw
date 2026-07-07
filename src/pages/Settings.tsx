@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { translations } from '../translations';
-import { platform, type ProviderConfig } from '../platform';
+import { platform, type ProviderConfig, type ProviderInfo, type ModelInfo } from '../platform';
 import {
   getConnectors,
   requestConnector,
@@ -42,15 +42,18 @@ export default function Settings() {
 
   const isSpanish = appLanguage === 'Español';
 
-  // Provider config state (baseUrl / model / apiKey) — vive en el agente (novaclaw.config.json).
+  // Config del proveedor de IA — vive en el agente (novaclaw.config.json).
   const [config, setConfig] = useState<ProviderConfig | null>(null);
-  const [baseUrlInput, setBaseUrlInput] = useState('');
-  const [modelInput, setModelInput] = useState('');
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [selectedProvider, setSelectedProvider] = useState<string>('opencode-zen');
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyError, setVerifyError] = useState('');
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [selectedModel, setSelectedModel] = useState('');
   const [providerSaving, setProviderSaving] = useState(false);
   const [providerSaved, setProviderSaved] = useState(false);
-  const [providerError, setProviderError] = useState('');
 
   // Conectores del teléfono (permisos reales de Android).
   const [connectors, setConnectors] = useState<ConnectorState>(() => getConnectors());
@@ -60,14 +63,41 @@ export default function Settings() {
     try {
       const c = await platform.getConfig();
       setConfig(c);
-      setBaseUrlInput(c.baseUrl ?? '');
-      setModelInput(c.model ?? '');
+      setSelectedProvider(c.provider ?? 'opencode-zen');
+      setSelectedModel(c.model ?? '');
     } catch {}
   }
 
   useEffect(() => {
     loadConfig();
+    platform.getProviders().then((r) => setProviders(r.providers ?? [])).catch(() => {});
   }, []);
+
+  const currentProviderDef = providers.find((p) => p.id === selectedProvider);
+
+  async function handleVerify() {
+    setVerifying(true);
+    setVerifyError('');
+    setModels([]);
+    try {
+      const result = await platform.verifyProvider(selectedProvider, apiKeyInput.trim());
+      if (!result.ok) {
+        setVerifyError(result.error ?? 'No se pudo verificar.');
+        return;
+      }
+      setModels(result.models);
+      if (result.models.length > 0) {
+        // Preseleccionar el modelo actual si sigue en la lista, o el primero.
+        const keep = result.models.find((m) => m.id === selectedModel);
+        setSelectedModel(keep ? keep.id : result.models[0].id);
+      }
+      if (result.error) setVerifyError(result.error);
+    } catch (err: any) {
+      setVerifyError(err?.message ?? 'Error verificando.');
+    } finally {
+      setVerifying(false);
+    }
+  }
 
   // Refrescar conectores al montar, al volver de un permiso, y periódicamente
   // (cubre el regreso desde la pantalla del sistema de "todos los archivos").
@@ -93,9 +123,11 @@ export default function Settings() {
 
   const openModal = (name: string) => {
     if (name === 'provider' && config) {
-      setBaseUrlInput(config.baseUrl ?? '');
-      setModelInput(config.model ?? '');
+      setSelectedProvider(config.provider ?? 'opencode-zen');
+      setSelectedModel(config.model ?? '');
       setApiKeyInput('');
+      setModels([]);
+      setVerifyError('');
     }
     setActiveModal(name);
   };
@@ -104,38 +136,31 @@ export default function Settings() {
     setApiKeyInput('');
     setApiKeyVisible(false);
     setProviderSaved(false);
-    setProviderError('');
+    setVerifyError('');
+    setModels([]);
   };
 
   async function handleSaveProvider() {
     setProviderSaving(true);
-    setProviderError('');
+    setVerifyError('');
     try {
-      // Solo mandamos la key si el usuario escribió una nueva (no pisamos la guardada).
-      const update: { baseUrl?: string; model?: string; apiKey?: string } = {
-        baseUrl: baseUrlInput.trim(),
-        model: modelInput.trim(),
+      const update: { provider?: string; model?: string; apiKey?: string } = {
+        provider: selectedProvider,
+        model: selectedModel.trim(),
       };
+      // Solo mandamos la key si el usuario escribió una nueva (no pisamos la guardada).
       if (apiKeyInput.trim()) update.apiKey = apiKeyInput.trim();
       const c = await platform.saveConfig(update);
       setConfig(c);
-      setBaseUrlInput(c.baseUrl ?? '');
-      setModelInput(c.model ?? '');
+      setSelectedModel(c.model ?? '');
       setProviderSaved(true);
       setApiKeyInput('');
       setTimeout(() => closeModal(), 1600);
     } catch (err: any) {
-      setProviderError(err?.message ?? (isSpanish ? 'No se pudo guardar.' : 'Failed to save.'));
+      setVerifyError(err?.message ?? (isSpanish ? 'No se pudo guardar.' : 'Failed to save.'));
     } finally {
       setProviderSaving(false);
     }
-  }
-
-  async function handleClearApiKey() {
-    try {
-      const c = await platform.saveConfig({ apiKey: '' });
-      setConfig(c);
-    } catch {}
   }
 
   return (
@@ -161,20 +186,15 @@ export default function Settings() {
 
       <div className="flex-1 overflow-y-auto px-4 pb-12 space-y-8">
 
-        {/* Proveedor de IA — modelo, URL base y API key (guardado en el agente) */}
+        {/* Modelo de IA — una sola entrada: proveedor + key + modelo verificado */}
         <SettingsSection icon={<Cpu size={18} />} title={isSpanish ? 'Modelo de IA' : 'AI Model'}>
           <SettingsGroup>
             <SettingsItem
               title={isSpanish ? 'Proveedor y modelo' : 'Provider & model'}
-              value={config ? config.model : (isSpanish ? 'Cargando…' : 'Loading…')}
-              onClick={() => openModal('provider')}
-            />
-            <SettingsItem
-              title="API Key"
               value={
-                config?.hasApiKey
-                  ? (isSpanish ? '● Configurada' : '● Configured')
-                  : (isSpanish ? 'Sin configurar' : 'Not configured')
+                config
+                  ? `${providers.find((p) => p.id === config.provider)?.label ?? config.provider} · ${config.model || (isSpanish ? 'sin modelo' : 'no model')}`
+                  : (isSpanish ? 'Cargando…' : 'Loading…')
               }
               valueColor={config?.hasApiKey ? 'text-emerald-400' : 'text-amber-400'}
               onClick={() => openModal('provider')}
@@ -182,8 +202,8 @@ export default function Settings() {
           </SettingsGroup>
           <p className="text-zinc-600 text-xs px-2 mt-2 leading-relaxed">
             {isSpanish
-              ? 'Configurá el proveedor (OpenRouter, Zen, etc.), el modelo y tu API key. Se guarda en el teléfono y el agente lo usa al instante.'
-              : 'Set the provider (OpenRouter, Zen, etc.), the model and your API key. Saved on-device; the agent uses it right away.'}
+              ? 'Elegí el proveedor, pegá tu API key y verificamos en el momento. Te mostramos los modelos reales de ese proveedor.'
+              : 'Pick the provider, paste your API key and we verify instantly, then show that provider\'s real models.'}
           </p>
         </SettingsSection>
 
@@ -305,7 +325,7 @@ export default function Settings() {
         </SettingsSection>
 
         <div className="pt-4 pb-8 flex flex-col items-center">
-          <p className="text-zinc-600 text-sm font-medium mb-6">NovaClaw v2.2.0</p>
+          <p className="text-zinc-600 text-sm font-medium mb-6">NovaClaw v3.0.0</p>
         </div>
       </div>
 
@@ -324,9 +344,9 @@ export default function Settings() {
               </button>
             </div>
 
-            {/* Provider modal (baseUrl / model / apiKey) */}
+            {/* Provider modal: proveedor -> API key -> verificar -> modelo */}
             {activeModal === 'provider' && (
-              <div className="space-y-4">
+              <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
                 {providerSaved ? (
                   <div className="flex flex-col items-center justify-center py-8 text-center space-y-3">
                     <CheckCircle2 size={48} className="text-emerald-400" />
@@ -334,52 +354,57 @@ export default function Settings() {
                       {isSpanish ? '¡Guardado!' : 'Saved!'}
                     </p>
                     <p className="text-zinc-400 text-sm">
-                      {isSpanish ? 'El agente ya usa la nueva configuración.' : 'The agent now uses the new config.'}
+                      {isSpanish ? 'El agente ya usa el nuevo modelo.' : 'The agent now uses the new model.'}
                     </p>
                   </div>
                 ) : (
                   <>
-                    {/* URL base del proveedor */}
+                    {/* Paso 1: proveedor */}
                     <div className="space-y-1.5">
                       <label className="text-zinc-400 text-xs font-semibold px-1">
-                        {isSpanish ? 'URL base' : 'Base URL'}
+                        {isSpanish ? '1 · Proveedor' : '1 · Provider'}
                       </label>
-                      <input
-                        type="text"
-                        value={baseUrlInput}
-                        onChange={(e) => { setBaseUrlInput(e.target.value); setProviderError(''); }}
-                        placeholder="https://openrouter.ai/api/v1"
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-[#FF7A1A] text-[14px] font-mono"
-                        autoComplete="off" autoCorrect="off" autoCapitalize="none"
-                      />
+                      <div className="grid grid-cols-2 gap-2">
+                        {providers.map((p) => {
+                          const disabled = p.note === 'login-oauth';
+                          const active = p.id === selectedProvider;
+                          return (
+                            <button
+                              key={p.id}
+                              type="button"
+                              disabled={disabled}
+                              onClick={() => { setSelectedProvider(p.id); setModels([]); setVerifyError(''); }}
+                              className={`px-3 py-2.5 rounded-xl text-[13px] font-semibold text-left border transition-colors ${
+                                active
+                                  ? 'bg-[#FF7A1A]/12 border-[#FF7A1A] text-orange-100'
+                                  : disabled
+                                    ? 'bg-zinc-950 border-zinc-900 text-zinc-600 cursor-not-allowed'
+                                    : 'bg-zinc-950 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
+                              }`}
+                            >
+                              {p.label}
+                              {disabled && <span className="block text-[10px] text-zinc-600 mt-0.5">{isSpanish ? 'Próximamente' : 'Coming soon'}</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {currentProviderDef && (
+                        <p className="text-zinc-600 text-[11px] px-1 pt-1 leading-snug">{currentProviderDef.keyHint}</p>
+                      )}
                     </div>
 
-                    {/* Modelo */}
+                    {/* Paso 2: API key + verificar */}
                     <div className="space-y-1.5">
                       <label className="text-zinc-400 text-xs font-semibold px-1">
-                        {isSpanish ? 'Modelo' : 'Model'}
-                      </label>
-                      <input
-                        type="text"
-                        value={modelInput}
-                        onChange={(e) => { setModelInput(e.target.value); setProviderError(''); }}
-                        placeholder="z-ai/glm-5.2"
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-[#FF7A1A] text-[14px] font-mono"
-                        autoComplete="off" autoCorrect="off" autoCapitalize="none"
-                      />
-                    </div>
-
-                    {/* API key (no se muestra la guardada; vacío = no cambiar) */}
-                    <div className="space-y-1.5">
-                      <label className="text-zinc-400 text-xs font-semibold px-1">
-                        API Key {config?.hasApiKey && <span className="text-emerald-500">· {isSpanish ? 'ya configurada' : 'already set'}</span>}
+                        {isSpanish ? '2 · API Key' : '2 · API Key'}
+                        {config?.hasApiKey && <span className="text-emerald-500"> · {isSpanish ? 'ya hay una guardada' : 'one already saved'}</span>}
                       </label>
                       <div className="relative">
                         <input
                           type={apiKeyVisible ? 'text' : 'password'}
                           value={apiKeyInput}
-                          onChange={(e) => { setApiKeyInput(e.target.value); setProviderError(''); }}
-                          placeholder={config?.hasApiKey ? (isSpanish ? 'Dejar vacío para no cambiarla' : 'Leave blank to keep current') : 'sk-or-v1-...'}
+                          onChange={(e) => { setApiKeyInput(e.target.value); setVerifyError(''); }}
+                          placeholder={config?.hasApiKey ? (isSpanish ? 'Dejar vacío para usar la guardada' : 'Leave blank to keep current') : 'sk-...'}
                           className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 pr-12 text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-[#FF7A1A] text-[14px] font-mono"
                           autoComplete="off" autoCorrect="off" autoCapitalize="none"
                         />
@@ -391,33 +416,69 @@ export default function Settings() {
                           {apiKeyVisible ? <EyeOff size={18} /> : <Eye size={18} />}
                         </button>
                       </div>
+                      <button
+                        type="button"
+                        disabled={verifying || (!apiKeyInput.trim() && !config?.hasApiKey)}
+                        onClick={handleVerify}
+                        className="w-full mt-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-100 font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
+                      >
+                        {verifying ? (isSpanish ? 'Verificando…' : 'Verifying…') : (isSpanish ? 'Verificar y ver modelos' : 'Verify & list models')}
+                      </button>
                     </div>
 
-                    {providerError && (
-                      <div className="flex items-center gap-2 text-red-400 text-sm">
-                        <AlertCircle size={16} />
-                        <span>{providerError}</span>
+                    {verifyError && (
+                      <div className="flex items-center gap-2 text-amber-400 text-sm">
+                        <AlertCircle size={16} className="shrink-0" />
+                        <span>{verifyError}</span>
                       </div>
                     )}
 
+                    {/* Paso 3: modelos (aparecen tras verificar) */}
+                    {models.length > 0 && (
+                      <div className="space-y-1.5">
+                        <label className="text-zinc-400 text-xs font-semibold px-1 flex items-center gap-1.5">
+                          <CheckCircle2 size={14} className="text-emerald-400" />
+                          {isSpanish ? `3 · Modelo (${models.length} disponibles)` : `3 · Model (${models.length} available)`}
+                        </label>
+                        <div className="space-y-1.5 max-h-52 overflow-y-auto">
+                          {models.map((m) => (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() => setSelectedModel(m.id)}
+                              className={`w-full text-left px-3.5 py-2.5 rounded-xl border flex items-center justify-between gap-2 transition-colors ${
+                                m.id === selectedModel
+                                  ? 'bg-[#FF7A1A]/12 border-[#FF7A1A] text-orange-100'
+                                  : 'bg-zinc-950 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
+                              }`}
+                            >
+                              <span className="min-w-0">
+                                <span className="block text-[14px] font-medium truncate">{m.label}</span>
+                                <span className="block text-[11px] text-zinc-500 truncate font-mono">{m.id}</span>
+                              </span>
+                              {m.tier && (
+                                <span className={`shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                  m.tier === 'premium' ? 'bg-violet-500/15 text-violet-300' : 'bg-emerald-500/15 text-emerald-300'
+                                }`}>
+                                  {m.tier === 'premium' ? (isSpanish ? 'POTENTE' : 'PREMIUM') : (isSpanish ? 'VALOR' : 'VALUE')}
+                                </span>
+                              )}
+                              {m.id === selectedModel && !m.tier && <CheckCircle2 size={16} className="text-[#FFB25C] shrink-0" />}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Guardar */}
                     <button
                       type="button"
-                      disabled={providerSaving || (!baseUrlInput.trim() && !modelInput.trim() && !apiKeyInput.trim())}
+                      disabled={providerSaving || !selectedModel}
                       onClick={handleSaveProvider}
                       className="w-full bg-[#E8660D] hover:bg-[#FF7A1A] disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-xl transition-colors"
                     >
-                      {providerSaving ? (isSpanish ? 'Guardando…' : 'Saving…') : (isSpanish ? 'Guardar' : 'Save')}
+                      {providerSaving ? (isSpanish ? 'Guardando…' : 'Saving…') : (isSpanish ? 'Guardar y usar este modelo' : 'Save & use this model')}
                     </button>
-
-                    {config?.hasApiKey && (
-                      <button
-                        type="button"
-                        onClick={handleClearApiKey}
-                        className="w-full bg-zinc-800 hover:bg-zinc-700 text-red-400 font-semibold py-3 rounded-xl transition-colors text-sm"
-                      >
-                        {isSpanish ? 'Borrar la API key guardada' : 'Clear saved API key'}
-                      </button>
-                    )}
                   </>
                 )}
               </div>
