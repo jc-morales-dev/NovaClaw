@@ -22,6 +22,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var runtime: RuntimeManager
     private lateinit var shizuku: ShizukuManager
     private lateinit var connectors: ConnectorBridge
+    private val nativeTools by lazy { NativeToolsServer(applicationContext) }
     @Volatile private var shizukuStatus = ShizukuManager.Status.NOT_RUNNING
     private val isRunning = AtomicBoolean(false)
 
@@ -37,6 +38,8 @@ class MainActivity : AppCompatActivity() {
 
         runtime = RuntimeManager(this)
         connectors = ConnectorBridge(this)
+        // Servidor de capacidades nativas (cámara/GPS/contactos) para el agente.
+        nativeTools.start()
         // Shizuku es opcional y silencioso: si no está, la app funciona igual y
         // el usuario jamás se entera de que existe.
         shizuku = ShizukuManager { status -> shizukuStatus = status }

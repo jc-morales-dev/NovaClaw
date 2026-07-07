@@ -96,6 +96,18 @@ Available tools:
 - workspace.mkdir — create a directory tree.
   Arguments: {"path":"<dir_path>"}
 
+- phone.location — get the phone's current GPS location.
+  Arguments: {} (none). Returns latitude, longitude and accuracy.
+  Needs the Location connector enabled in Settings.
+
+- phone.contacts — search the phone's contacts.
+  Arguments: {"query":"<name or empty for all>"}. Returns matching name/number pairs.
+  Needs the Contacts connector enabled in Settings.
+
+- phone.photo — take a photo with the phone camera and save it as a file.
+  Arguments: {"facing":"back"|"front"}. Returns the saved image path; read/analyze it
+  afterwards with file tools. Needs the Camera connector enabled in Settings.
+
 Phone access (connectors):
 - The user can enable connectors in Settings → Connectors (files, camera, location,
   contacts, calendar, microphone). When the "files"/"full access" connector is on,

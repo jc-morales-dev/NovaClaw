@@ -17,6 +17,20 @@ function resolveTargetPath(inputPath: string, cwd: string): string {
   return path.isAbsolute(inputPath) ? inputPath : path.resolve(cwd, inputPath);
 }
 
+// Puente con el servidor de capacidades nativas (Kotlin) — cámara/GPS/contactos.
+const NATIVE_TOOLS_BASE = process.env.NOVACLAW_NATIVE_URL || 'http://127.0.0.1:8099';
+
+async function callNativeTool(pathAndQuery: string): Promise<any> {
+  const res = await fetch(`${NATIVE_TOOLS_BASE}${pathAndQuery}`, {
+    signal: AbortSignal.timeout(15000),
+  });
+  const data = await res.json();
+  if (data && data.error) {
+    throw new Error(data.error);
+  }
+  return data;
+}
+
 async function runTerminalCommand(command: string, cwd: string): Promise<ToolExecutionResult> {
   const trimmed = command.trim();
   // En Android (shell Linux real) mandamos ls/cat al shell nativo; en la PC se
@@ -208,6 +222,75 @@ export function createLocalToolExecutor() {
       cwd: context.cwd,
     };
   }
+
+    // ── Herramientas nativas del teléfono (vía servidor Kotlin en :8099) ──────
+    if (call.tool === 'phone.location') {
+      try {
+        const loc = await callNativeTool('/location');
+        return {
+          name: 'phone.location',
+          command: 'location',
+          status: 'success',
+          output: JSON.stringify(loc),
+          cwd: context.cwd,
+        };
+      } catch (error: any) {
+        return {
+          name: 'phone.location',
+          command: 'location',
+          status: 'error',
+          output: error?.message ?? 'Could not read location.',
+          cwd: context.cwd,
+        };
+      }
+    }
+
+    if (call.tool === 'phone.contacts') {
+      const q = String(call.arguments.query ?? '').trim();
+      try {
+        const data = await callNativeTool(`/contacts?q=${encodeURIComponent(q)}`);
+        const list = (data.contacts ?? [])
+          .map((c: any) => `${c.name || '(sin nombre)'} — ${c.number}`)
+          .join('\n');
+        return {
+          name: 'phone.contacts',
+          command: `contacts ${q}`.trim(),
+          status: 'success',
+          output: list || 'No matching contacts.',
+          cwd: context.cwd,
+        };
+      } catch (error: any) {
+        return {
+          name: 'phone.contacts',
+          command: `contacts ${q}`.trim(),
+          status: 'error',
+          output: error?.message ?? 'Could not read contacts.',
+          cwd: context.cwd,
+        };
+      }
+    }
+
+    if (call.tool === 'phone.photo') {
+      const facing = String(call.arguments.facing ?? 'back');
+      try {
+        const data = await callNativeTool(`/photo?facing=${encodeURIComponent(facing)}`);
+        return {
+          name: 'phone.photo',
+          command: `photo ${facing}`,
+          status: 'success',
+          output: `Photo saved: ${data.path} (${data.bytes} bytes, ${data.facing} camera). You can read/analyze it with file tools.`,
+          cwd: context.cwd,
+        };
+      } catch (error: any) {
+        return {
+          name: 'phone.photo',
+          command: `photo ${facing}`,
+          status: 'error',
+          output: error?.message ?? 'Could not take a photo.',
+          cwd: context.cwd,
+        };
+      }
+    }
 
     throw new Error(`Unsupported tool: ${call.tool}`);
   };
