@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Garra NovaClaw escalada a la zona segura del ícono adaptativo -->
+    <group
+        android:scaleX="0.62"
+        android:scaleY="0.62"
+        android:pivotX="54"
+        android:pivotY="54">
+        <path
+            android:fillColor="#FF7A1A"
+            android:pathData="M54,22c-16,0 -29,12 -29,28c0,10 5,18 13,23l0,-14c-2,-3 -3,-6 -3,-9c0,-10 8,-18 19,-18c11,0 19,8 19,18c0,3 -1,6 -3,9l0,14c8,-5 13,-13 13,-23c0,-16 -13,-28 -29,-28z" />
+        <path
+            android:fillColor="#FF7A1A"
+            android:pathData="M42,58l0,20c0,4 3,8 8,8l8,0c5,0 8,-4 8,-8l0,-20l-7,0l0,18l-10,0l0,-18z" />
+        <path
+            android:fillColor="#11151F"
+            android:pathData="M48,42m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0" />
+        <path
+            android:fillColor="#11151F"
+            android:pathData="M60,42m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0" />
+    </group>
+</vector>

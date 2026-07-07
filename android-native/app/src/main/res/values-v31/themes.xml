@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12+: el splash del sistema (icono al abrir) con fondo de marca
+         en vez del blanco por defecto. -->
+    <style name="Theme.NovaClaw" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#FF7A1A</item>
+        <item name="colorPrimaryDark">#0D0A08</item>
+        <item name="colorAccent">#FF7A1A</item>
+        <item name="android:windowBackground">#0D0A08</item>
+        <item name="android:statusBarColor">#0D0A08</item>
+        <item name="android:navigationBarColor">#0D0A08</item>
+        <item name="android:windowSplashScreenBackground">#0D0A08</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">#0D0A08</item>
+    </style>
+</resources>
