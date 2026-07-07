@@ -97,7 +97,11 @@ Available tools:
   Arguments: {"path":"<dir_path>"}
 
 - phone.location — get the phone's current GPS location.
-  Arguments: {} (none). Returns latitude, longitude and accuracy.
+  Arguments: {} (none). Returns latitude/longitude/accuracy AND a human-readable
+  address when available: street, city, area, state, country, postalCode, address.
+  When the user asks "where am I", answer in plain language using the address fields
+  (e.g. "Estás en <street>, <city>, <state>, <country>") — do NOT just read out the
+  raw latitude/longitude. Mention coordinates only if the user asks for them.
   Needs the Location connector enabled in Settings.
 
 - phone.contacts — search the phone's contacts.

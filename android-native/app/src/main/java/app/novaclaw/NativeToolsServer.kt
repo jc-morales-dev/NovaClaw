@@ -9,6 +9,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.location.Geocoder
 import android.location.Location
 import android.location.LocationManager
 import android.media.ImageReader
@@ -23,10 +24,13 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStream
+import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URL
 import java.net.URLDecoder
+import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
@@ -155,13 +159,81 @@ class NativeToolsServer(private val context: Context) {
         if (best == null) {
             return JSONObject().put("error", "no location fix available yet — move to an open area and retry")
         }
-        return JSONObject().apply {
+        val out = JSONObject().apply {
             put("latitude", best!!.latitude)
             put("longitude", best!!.longitude)
             put("accuracyMeters", best!!.accuracy.toDouble())
             put("provider", best!!.provider)
             put("timestamp", best!!.time)
         }
+        // Dirección legible (calle, ciudad, provincia, país) — geocoder nativo
+        // y, si falla, OpenStreetMap por internet.
+        reverseGeocode(best!!.latitude, best!!.longitude)?.let { addr ->
+            for (key in addr.keys()) out.put(key, addr.get(key))
+        }
+        return out
+    }
+
+    /** Convierte lat/lng en una dirección legible. Intenta el Geocoder nativo y,
+     *  si no hay backend o falla, cae a Nominatim (OpenStreetMap) por internet. */
+    private fun reverseGeocode(lat: Double, lng: Double): JSONObject? {
+        // 1) Geocoder nativo de Android (offline en muchos equipos).
+        try {
+            if (Geocoder.isPresent()) {
+                @Suppress("DEPRECATION")
+                val list = Geocoder(context, Locale("es")).getFromLocation(lat, lng, 1)
+                val a = list?.firstOrNull()
+                if (a != null) {
+                    val street = listOfNotNull(a.thoroughfare, a.subThoroughfare)
+                        .joinToString(" ").ifBlank { a.featureName ?: "" }
+                    val full = (0..a.maxAddressLineIndex).mapNotNull { a.getAddressLine(it) }
+                        .joinToString(", ")
+                    return JSONObject().apply {
+                        if (street.isNotBlank()) put("street", street)
+                        a.locality?.let { put("city", it) }
+                        (a.subAdminArea ?: a.adminArea)?.let { put("area", it) }
+                        a.adminArea?.let { put("state", it) }
+                        a.countryName?.let { put("country", it) }
+                        a.postalCode?.let { put("postalCode", it) }
+                        if (full.isNotBlank()) put("address", full)
+                    }
+                }
+            }
+        } catch (_: Exception) { /* cae a Nominatim */ }
+
+        // 2) Fallback web: Nominatim (OpenStreetMap).
+        try {
+            val url = URL(
+                "https://nominatim.openstreetmap.org/reverse?format=jsonv2" +
+                    "&lat=$lat&lon=$lng&accept-language=es&zoom=18"
+            )
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                setRequestProperty("User-Agent", "NovaClaw/1.0 (agent)")
+                connectTimeout = 6000
+                readTimeout = 6000
+            }
+            if (conn.responseCode == 200) {
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                val json = JSONObject(body)
+                val addr = json.optJSONObject("address")
+                return JSONObject().apply {
+                    put("address", json.optString("display_name"))
+                    if (addr != null) {
+                        (addr.optString("road").takeIf { it.isNotBlank() })?.let { put("street", it) }
+                        val city = addr.optString("city").ifBlank {
+                            addr.optString("town").ifBlank { addr.optString("village") }
+                        }
+                        if (city.isNotBlank()) put("city", city)
+                        (addr.optString("state").takeIf { it.isNotBlank() })?.let { put("state", it) }
+                        (addr.optString("country").takeIf { it.isNotBlank() })?.let { put("country", it) }
+                        (addr.optString("postcode").takeIf { it.isNotBlank() })?.let { put("postalCode", it) }
+                    }
+                }
+            }
+        } catch (_: Exception) { /* sin dirección */ }
+
+        return null
     }
 
     /** Pide una única actualización de ubicación con timeout (arranque en frío). */
