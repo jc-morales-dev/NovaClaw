@@ -93,7 +93,9 @@ export function getProvider(id: string): ProviderDef | undefined {
  */
 export const OPENROUTER_CURATED: Array<{ match: string; tier: 'premium' | 'value' }> = [
   // Premium — máxima calidad
+  { match: 'anthropic/claude-fable-5', tier: 'premium' },
   { match: 'anthropic/claude-sonnet', tier: 'premium' },
+  { match: 'anthropic/claude-opus-4.8', tier: 'premium' },
   { match: 'anthropic/claude-opus', tier: 'premium' },
   { match: 'openai/gpt-5', tier: 'premium' },
   { match: 'google/gemini-3-pro', tier: 'premium' },
@@ -103,10 +105,13 @@ export const OPENROUTER_CURATED: Array<{ match: string; tier: 'premium' | 'value
   { match: 'deepseek/deepseek-v3', tier: 'value' },
   { match: 'deepseek/deepseek-chat', tier: 'value' },
   { match: 'deepseek/deepseek-r1', tier: 'value' },
-  { match: 'z-ai/glm-4.6', tier: 'value' },
+  { match: 'z-ai/glm-5.2', tier: 'value' },
   { match: 'z-ai/glm-5', tier: 'value' },
+  { match: 'z-ai/glm-4.6', tier: 'value' },
+  { match: 'minimax/minimax-m3', tier: 'value' },
   { match: 'minimax/minimax-m2', tier: 'value' },
   { match: 'qwen/qwen3-coder', tier: 'value' },
+  { match: 'moonshotai/kimi-k2.7', tier: 'value' },
   { match: 'moonshotai/kimi-k2', tier: 'value' },
 ];
 
