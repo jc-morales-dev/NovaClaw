@@ -54,11 +54,22 @@ class MainActivity : AppCompatActivity() {
         if (!isRunning.compareAndSet(false, true)) return
         runOnUiThread {
             binding.btnRetry.visibility = View.GONE
-            binding.progress.visibility = View.VISIBLE
+            binding.spinner.visibility = View.VISIBLE
             binding.txtHint.text = "La primera vez se descarga todo lo necesario.\nPuede tardar unos minutos."
         }
         thread {
             try {
+                // Primera instalación: mostrar progreso detallado. Arranques
+                // normales: splash limpio solo con el logo y un spinner.
+                val isFirstRun = !BootstrapInstaller.isBootstrapInstalled(this) || !runtime.isNodeInstalled()
+                runOnUiThread {
+                    val detail = if (isFirstRun) View.VISIBLE else View.GONE
+                    binding.progress.visibility = detail
+                    binding.txtStatus.visibility = detail
+                    binding.txtHint.visibility = detail
+                    binding.spinner.visibility = if (isFirstRun) View.GONE else View.VISIBLE
+                }
+
                 if (!BootstrapInstaller.isBootstrapInstalled(this)) {
                     setStatus("Descargando el sistema base…")
                     BootstrapInstaller.install(this) { log("· $it") }
@@ -103,7 +114,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun showError(message: String) {
         runOnUiThread {
-            binding.progress.visibility = View.INVISIBLE
+            binding.progress.visibility = View.GONE
+            binding.spinner.visibility = View.GONE
+            binding.txtStatus.visibility = View.VISIBLE
+            binding.txtHint.visibility = View.VISIBLE
             binding.txtStatus.text = "Algo salió mal"
             binding.txtHint.text = "$message\nRevisá tu conexión e intentá de nuevo."
             binding.btnRetry.visibility = View.VISIBLE
@@ -115,10 +129,22 @@ class MainActivity : AppCompatActivity() {
         val wv = binding.webView
         wv.settings.javaScriptEnabled = true
         wv.settings.domStorageEnabled = true
-        wv.webViewClient = WebViewClient()
+        // Mismo fondo que la UI para que no haya flash blanco al aparecer.
+        wv.setBackgroundColor(android.graphics.Color.parseColor("#0B0908"))
+        wv.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                // El splash se va recién cuando la UI terminó de cargar; el
+                // margen extra cubre la animación de bienvenida de React para
+                // que el usuario pase del logo directo al home ya pintado.
+                binding.root.postDelayed({
+                    binding.setupRoot.visibility = View.GONE
+                    wv.visibility = View.VISIBLE
+                }, 1200)
+            }
+        }
+        // INVISIBLE (no GONE) para que el WebView renderice detrás del splash.
+        wv.visibility = View.INVISIBLE
         wv.loadUrl("http://127.0.0.1:$AGENT_PORT")
-        binding.setupRoot.visibility = View.GONE
-        wv.visibility = View.VISIBLE
     }
 
     override fun onDestroy() {

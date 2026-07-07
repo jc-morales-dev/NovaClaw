@@ -14,12 +14,12 @@
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="match_parent"
             android:orientation="vertical"
-            android:gravity="center_horizontal"
+            android:gravity="center"
             android:paddingStart="32dp"
             android:paddingEnd="32dp"
-            android:paddingTop="96dp"
+            android:paddingTop="32dp"
             android:paddingBottom="32dp">
 
             <View
@@ -47,6 +47,17 @@
                 android:textSize="14sp"
                 android:layout_marginTop="6dp" />
 
+            <!-- Spinner discreto de splash (arranques normales) -->
+            <ProgressBar
+                android:id="@+id/spinner"
+                style="?android:attr/progressBarStyle"
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:indeterminate="true"
+                android:indeterminateTint="#FF7A1A"
+                android:layout_marginTop="40dp" />
+
+            <!-- Progreso detallado (solo primera instalación) -->
             <ProgressBar
                 android:id="@+id/progress"
                 style="?android:attr/progressBarStyleHorizontal"
@@ -54,7 +65,8 @@
                 android:layout_height="wrap_content"
                 android:indeterminate="true"
                 android:indeterminateTint="#FF7A1A"
-                android:layout_marginTop="44dp" />
+                android:layout_marginTop="32dp"
+                android:visibility="gone" />
 
             <TextView
                 android:id="@+id/txtStatus"
@@ -63,7 +75,8 @@
                 android:text="Preparando el entorno…"
                 android:textColor="#E8D9C5"
                 android:textSize="14sp"
-                android:layout_marginTop="14dp" />
+                android:layout_marginTop="14dp"
+                android:visibility="gone" />
 
             <TextView
                 android:id="@+id/txtHint"
@@ -73,7 +86,8 @@
                 android:textColor="#6E6053"
                 android:textSize="12sp"
                 android:gravity="center"
-                android:layout_marginTop="8dp" />
+                android:layout_marginTop="8dp"
+                android:visibility="gone" />
 
             <Button
                 android:id="@+id/btnRetry"

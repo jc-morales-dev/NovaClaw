@@ -134,7 +134,7 @@ export default function Home() {
   }
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto bg-[#0B0908] text-zinc-100 font-sans relative">
+    <div className="flex flex-col h-full overflow-y-auto overflow-x-hidden bg-[#0B0908] text-zinc-100 font-sans relative">
       {/* Resplandor cálido superior */}
       <div className="pointer-events-none absolute -top-36 left-1/2 -translate-x-1/2 w-[480px] h-[340px] bg-[radial-gradient(ellipse_at_center,rgba(255,122,26,0.20),rgba(232,148,26,0.06)_55%,transparent_75%)]" />
 
@@ -149,12 +149,6 @@ export default function Home() {
             <p className="text-zinc-500 text-[12px] font-medium mt-1">{t.appSubtitle}</p>
           </div>
         </div>
-        <button
-          onClick={() => navigate('/settings')}
-          className="p-2.5 bg-white/5 border border-white/10 hover:bg-white/10 rounded-full transition-colors shrink-0"
-        >
-          <Settings size={19} className="text-zinc-400" />
-        </button>
       </div>
 
       <div className="px-5 pt-6 space-y-4 relative">
