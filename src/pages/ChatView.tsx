@@ -346,13 +346,19 @@ export default function ChatView() {
         const data = await platform.getChatHistory(sessionId);
         if (!isMounted) return;
 
-        setMessages(
-          buildMessagesFromServerHistory(
-            data.history ?? [],
-            data.pendingApproval ?? null,
-            t.welcomeMessage,
-          ),
+        const serverHasContent = (data.history ?? []).length > 0;
+        const serverMessages = buildMessagesFromServerHistory(
+          data.history ?? [],
+          data.pendingApproval ?? null,
+          t.welcomeMessage,
         );
+        // No pisar la conversación local guardada si el servidor responde
+        // vacío (p. ej. el agente acaba de reiniciar y aún no cargó del disco).
+        setMessages((prev) => {
+          const prevHasContent = prev.some((m) => m.role === 'user');
+          if (!serverHasContent && prevHasContent) return prev;
+          return serverMessages;
+        });
       } catch {
         // Keep the local fallback state when the backend cannot be reached.
       }

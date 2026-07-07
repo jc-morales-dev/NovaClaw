@@ -89,6 +89,35 @@ type RuntimeSnapshot = {
 };
 
 const agentSessions = new Map<string, AgentSession>();
+
+// Persistencia de conversaciones: viven junto a la config para sobrevivir a
+// cierres de la app y reinicios del servicio (antes se perdían al reabrir).
+const SESSIONS_PATH = path.join(path.dirname(NOVACLAW_CONFIG_PATH), 'novaclaw.sessions.json');
+
+function loadSessionsFromDisk() {
+  try {
+    if (!fs.existsSync(SESSIONS_PATH)) return;
+    const raw = JSON.parse(fs.readFileSync(SESSIONS_PATH, 'utf8'));
+    if (raw && typeof raw === 'object') {
+      for (const [id, session] of Object.entries(raw)) {
+        agentSessions.set(id, session as AgentSession);
+      }
+    }
+  } catch (error) {
+    console.error('No se pudieron cargar las conversaciones guardadas:', error);
+  }
+}
+
+function saveSessionsToDisk() {
+  try {
+    const obj: Record<string, AgentSession> = {};
+    for (const [id, session] of agentSessions.entries()) obj[id] = session;
+    fs.writeFileSync(SESSIONS_PATH, JSON.stringify(obj), 'utf8');
+  } catch (error) {
+    console.error('No se pudieron guardar las conversaciones:', error);
+  }
+}
+
 const MAX_LOGS = 200;
 const systemLogs: string[] = [];
 
@@ -204,6 +233,9 @@ function appendOpenCodeMessage(message: string) {
     runtimeState.opencode.message = trimmed;
   }
 }
+
+// Carga las conversaciones persistidas al arrancar el agente.
+loadSessionsFromDisk();
 
 function getOrCreateSession(sessionId: string): AgentSession {
   const existing = agentSessions.get(sessionId);
@@ -654,6 +686,8 @@ const agentRuntime = createAgentRuntime({
   workspaceRoot: DEFAULT_CWD,
   callModel: callZenAgent,
   executeToolCall: createLocalToolExecutor(),
+  // Más pasos por turno: el agente encadena más herramientas antes de rendirse.
+  maxIterations: 18,
 });
 
 // ── Terminal PTY real (WebSocket) ──────────────────────────────────────────
@@ -794,6 +828,7 @@ async function startServer() {
       const session = getOrCreateSession(sessionId);
       const result = await agentRuntime.runUserTurn(session, message);
       runtimeState.terminal.cwd = session.cwd;
+      saveSessionsToDisk();
       return res.json({ events: result.events });
     } catch (error: any) {
       console.error('Chat API Error:', error);
@@ -815,6 +850,7 @@ async function startServer() {
       const session = getOrCreateSession(sessionId);
       const result = await agentRuntime.resolveApproval(session, Boolean(approved));
       runtimeState.terminal.cwd = session.cwd;
+      saveSessionsToDisk();
       return res.json({ events: result.events });
     } catch (error: any) {
       console.error('Approval API Error:', error);
@@ -832,6 +868,7 @@ async function startServer() {
   app.post('/api/chat/reset', (req, res) => {
     const { sessionId = AGENT_SESSION_ID } = req.body;
     agentSessions.delete(sessionId);
+    saveSessionsToDisk();
     runtimeState.terminal.cwd = DEFAULT_CWD;
     res.json({ success: true });
   });
