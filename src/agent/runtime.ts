@@ -38,6 +38,27 @@ type ApprovalEvent = {
 
 export type AgentRuntimeEvent = MessageEvent | ToolExecutionEvent | ApprovalEvent;
 
+export type AgentEventSink = (event: AgentRuntimeEvent) => void;
+
+/** Array de eventos que además notifica a un sink en cada push — así el server
+ *  puede streamear los eventos al cliente EN VIVO mientras el turno avanza. */
+export function trackedEvents(onEvent?: AgentEventSink): AgentRuntimeEvent[] {
+  const arr: AgentRuntimeEvent[] = [];
+  if (!onEvent) return arr;
+  const originalPush = arr.push.bind(arr);
+  arr.push = (...items: AgentRuntimeEvent[]) => {
+    for (const item of items) {
+      try {
+        onEvent(item);
+      } catch {
+        // un sink roto nunca debe frenar al agente
+      }
+    }
+    return originalPush(...items);
+  };
+  return arr;
+}
+
 type RuntimeResult = {
   events: AgentRuntimeEvent[];
 };
@@ -308,21 +329,28 @@ export function createAgentRuntime(options: RuntimeOptions) {
     return { events };
   }
 
-  async function runUserTurn(session: AgentSession, message: string): Promise<RuntimeResult> {
+  async function runUserTurn(
+    session: AgentSession,
+    message: string,
+    onEvent?: AgentEventSink,
+  ): Promise<RuntimeResult> {
     session.history.push({ role: 'user', content: message });
-    return continueLoop(session, []);
+    return continueLoop(session, trackedEvents(onEvent));
   }
 
-  async function resolveApproval(session: AgentSession, approved: boolean): Promise<RuntimeResult> {
+  async function resolveApproval(
+    session: AgentSession,
+    approved: boolean,
+    onEvent?: AgentEventSink,
+  ): Promise<RuntimeResult> {
+    const events = trackedEvents(onEvent);
+
     if (!session.pendingApproval) {
-      return {
-        events: [
-          {
-            type: 'message',
-            message: 'No pending action requires approval.',
-          },
-        ],
-      };
+      events.push({
+        type: 'message',
+        message: 'No pending action requires approval.',
+      });
+      return { events };
     }
 
     const pendingApproval = session.pendingApproval;
@@ -333,7 +361,7 @@ export function createAgentRuntime(options: RuntimeOptions) {
         role: 'system',
         content: `User rejected tool call: ${pendingApproval.summary}`,
       });
-      return continueLoop(session, []);
+      return continueLoop(session, events);
     }
 
     session.history.push({
@@ -355,12 +383,11 @@ export function createAgentRuntime(options: RuntimeOptions) {
       content: toolResultToHistory(toolResult),
     });
 
-    return continueLoop(session, [
-      {
-        type: 'toolExecution',
-        toolExecution: toolResult,
-      },
-    ]);
+    events.push({
+      type: 'toolExecution',
+      toolExecution: toolResult,
+    });
+    return continueLoop(session, events);
   }
 
   return {

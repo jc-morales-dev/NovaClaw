@@ -55,6 +55,10 @@ interface PlatformAdapter {
  startAgent(): Promise<void>;
  sendChat(message: string, sessionId: string): Promise<ChatResponse>;
  approveAction(sessionId: string, approved: boolean): Promise<ChatResponse>;
+ /** Como sendChat pero entrega cada evento EN VIVO vía onEvent (streaming).
+  * Si el streaming no está disponible, cae a sendChat y emite igual por onEvent. */
+ sendChatStream(message: string, sessionId: string, onEvent: (ev: ChatEvent) => void): Promise<ChatResponse>;
+ approveActionStream(sessionId: string, approved: boolean, onEvent: (ev: ChatEvent) => void): Promise<ChatResponse>;
  getChatHistory(sessionId: string): Promise<ChatHistoryResponse>;
  resetChat(sessionId: string): Promise<void>;
  runTerminal(command: string, cwd?: string): Promise<TerminalResult>;
@@ -82,6 +86,41 @@ function isCapacitor(): boolean {
  return typeof window !== 'undefined' && !!window.Capacitor?.isNativePlatform?.();
 }
 
+// ── SSE (streaming de eventos del agente) ─────────────────────────────────────
+
+/** Consume una respuesta SSE del server y emite cada evento `agent` al vuelo. */
+async function consumeSse(res: Response, onEvent: (ev: ChatEvent) => void): Promise<ChatEvent[]> {
+ const all: ChatEvent[] = [];
+ const reader = res.body!.getReader();
+ const decoder = new TextDecoder();
+ let buffer = '';
+ for (;;) {
+ const { done, value } = await reader.read();
+ if (done) break;
+ buffer += decoder.decode(value, { stream: true });
+ let sep = buffer.indexOf('\n\n');
+ while (sep !== -1) {
+ const chunk = buffer.slice(0, sep);
+ buffer = buffer.slice(sep + 2);
+ let eventName = 'message';
+ let dataLine = '';
+ for (const line of chunk.split('\n')) {
+ if (line.startsWith('event: ')) eventName = line.slice(7).trim();
+ else if (line.startsWith('data: ')) dataLine += line.slice(6);
+ }
+ if (eventName === 'agent' && dataLine) {
+ try {
+ const ev = JSON.parse(dataLine) as ChatEvent;
+ all.push(ev);
+ onEvent(ev);
+ } catch { /* evento malformado — se ignora */ }
+ }
+ sep = buffer.indexOf('\n\n');
+ }
+ }
+ return all;
+}
+
 // ── Web adapter ───────────────────────────────────────────────────────────────
 
 const webAdapter: PlatformAdapter = {
@@ -98,6 +137,31 @@ const webAdapter: PlatformAdapter = {
  async approveAction(sessionId, approved) {
  const r = await fetch('/api/chat/approval', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, approved }) });
  return r.json();
+ },
+ async sendChatStream(message, sessionId, onEvent) {
+ try {
+ const r = await fetch('/api/chat/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, sessionId }) });
+ if (!r.ok || !r.body) throw new Error(`stream ${r.status}`);
+ const events = await consumeSse(r, onEvent);
+ return { events };
+ } catch {
+ // Fallback sin streaming: emitimos los eventos al final por el mismo camino.
+ const data = await webAdapter.sendChat(message, sessionId);
+ for (const ev of data.events ?? []) onEvent(ev);
+ return data;
+ }
+ },
+ async approveActionStream(sessionId, approved, onEvent) {
+ try {
+ const r = await fetch('/api/chat/approval/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, approved }) });
+ if (!r.ok || !r.body) throw new Error(`stream ${r.status}`);
+ const events = await consumeSse(r, onEvent);
+ return { events };
+ } catch {
+ const data = await webAdapter.approveAction(sessionId, approved);
+ for (const ev of data.events ?? []) onEvent(ev);
+ return data;
+ }
  },
  async getChatHistory(sessionId) {
  const r = await fetch(`/api/chat/history?sessionId=${encodeURIComponent(sessionId)}`);
@@ -378,6 +442,41 @@ const capacitorAdapter: PlatformAdapter = {
  if (!apiKey) return { events: [{ type: 'message', message: NO_KEY_MESSAGE }] };
  const runtime = buildCapacitorRuntime(apiKey);
  const result = await runtime.resolveApproval(session, approved);
+ capacitorSessions.set(sessionId, session);
+ persistSessions(capacitorSessions);
+ return { events: result.events.map(runtimeEventToChatEvent) };
+ },
+
+ // El runtime vive en el mismo proceso: streaming = pasar el sink directo.
+ async sendChatStream(message, sessionId, onEvent) {
+ const session = capacitorSessions.get(sessionId) ?? createNewSession(sessionId);
+ const apiKey = await resolveApiKey();
+ if (!apiKey) {
+ const ev: ChatEvent = { type: 'message', message: NO_KEY_MESSAGE };
+ onEvent(ev);
+ return { events: [ev] };
+ }
+ const runtime = buildCapacitorRuntime(apiKey);
+ const result = await runtime.runUserTurn(session, message, (ev) => onEvent(runtimeEventToChatEvent(ev)));
+ capacitorSessions.set(sessionId, session);
+ persistSessions(capacitorSessions);
+ return { events: result.events.map(runtimeEventToChatEvent) };
+ },
+ async approveActionStream(sessionId, approved, onEvent) {
+ const session = capacitorSessions.get(sessionId);
+ if (!session) {
+ const ev: ChatEvent = { type: 'message', message: 'Sesión no encontrada.' };
+ onEvent(ev);
+ return { events: [ev] };
+ }
+ const apiKey = await resolveApiKey();
+ if (!apiKey) {
+ const ev: ChatEvent = { type: 'message', message: NO_KEY_MESSAGE };
+ onEvent(ev);
+ return { events: [ev] };
+ }
+ const runtime = buildCapacitorRuntime(apiKey);
+ const result = await runtime.resolveApproval(session, approved, (ev) => onEvent(runtimeEventToChatEvent(ev)));
  capacitorSessions.set(sessionId, session);
  persistSessions(capacitorSessions);
  return { events: result.events.map(runtimeEventToChatEvent) };

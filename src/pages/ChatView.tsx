@@ -291,6 +291,14 @@ function ApprovalRequestBlock({
   );
 }
 
+// Ids monótonos para mensajes: con streaming pueden llegar varios eventos en el
+// mismo milisegundo y Date.now() solo colisionaría (keys de React duplicadas).
+let messageIdSeq = 0;
+function nextMessageId(): number {
+  messageIdSeq += 1;
+  return Date.now() + messageIdSeq;
+}
+
 export default function ChatView() {
   const navigate = useNavigate();
   const { appLanguage } = useSettings();
@@ -372,8 +380,8 @@ export default function ChatView() {
   }, [t.welcomeMessage]);
 
   function appendServerEvents(events: ServerEvent[]) {
-    const newMessages: Message[] = events.map((event, index) => {
-      const id = Date.now() + index;
+    const newMessages: Message[] = events.map((event) => {
+      const id = nextMessageId();
       if (event.type === 'toolExecution') {
         return {
           id,
@@ -404,8 +412,8 @@ export default function ChatView() {
   }
 
   async function sendChatMessage(userText: string) {
-    const data = await platform.sendChat(userText, sessionId);
-    appendServerEvents(data.events ?? []);
+    // Streaming: cada evento (mensaje, tool call, aprobación) aparece EN VIVO.
+    await platform.sendChatStream(userText, sessionId, (ev) => appendServerEvents([ev]));
   }
 
   const submitText = async (rawText: string) => {
@@ -462,8 +470,7 @@ export default function ChatView() {
     setIsTyping(true);
 
     try {
-      const data = await platform.approveAction(sessionId, approved);
-      appendServerEvents(data.events ?? []);
+      await platform.approveActionStream(sessionId, approved, (ev) => appendServerEvents([ev]));
     } catch (error: any) {
       setMessages((prev) => [
         ...prev,

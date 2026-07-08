@@ -7,6 +7,7 @@
 import { classifyToolCall } from './safety';
 import { callModelWithTools, type AgentMessage } from './modelClient';
 import { TOOL_NAME_TO_DOT } from './toolSchemas';
+import { trackedEvents, type AgentEventSink } from './runtime';
 import type { AgentSession, AgentRuntimeEvent } from './runtime';
 import type { ToolCallLike, ToolExecutionResult } from './types';
 
@@ -310,22 +311,30 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     return result;
   }
 
-  async function runUserTurn(session: AgentSession, message: string): Promise<RuntimeResult> {
+  async function runUserTurn(
+    session: AgentSession,
+    message: string,
+    onEvent?: AgentEventSink,
+  ): Promise<RuntimeResult> {
     session.history.push({ role: 'user', content: message });
     const messages = buildBaseMessages(session);
-    return runLoop(session, messages, []);
+    return runLoop(session, messages, trackedEvents(onEvent));
   }
 
-  async function resolveApproval(session: AgentSession, approved: boolean): Promise<RuntimeResult> {
+  async function resolveApproval(
+    session: AgentSession,
+    approved: boolean,
+    onEvent?: AgentEventSink,
+  ): Promise<RuntimeResult> {
     const pending = session.pendingApproval;
     const resume = (session as any).native as NativeResume | undefined;
+    const events = trackedEvents(onEvent);
     if (!pending || !resume) {
-      return { events: [{ type: 'message', message: 'No hay ninguna acción pendiente de aprobar.' }] };
+      events.push({ type: 'message', message: 'No hay ninguna acción pendiente de aprobar.' });
+      return { events };
     }
     session.pendingApproval = null;
     (session as any).native = undefined;
-
-    const events: AgentRuntimeEvent[] = [];
     const { messages, batch, nextIndex } = resume;
     const tc = batch[nextIndex];
 

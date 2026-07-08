@@ -883,6 +883,58 @@ async function startServer() {
     }
   });
 
+  // ── Streaming en vivo (SSE): los eventos del agente llegan a medida que
+  // ocurren (mensajes, tool calls, aprobaciones), como en Claude Code. ──────
+  function openSse(res: import('express').Response) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    return (eventName: string, payload: unknown) => {
+      res.write(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`);
+    };
+  }
+
+  app.post('/api/chat/stream', async (req, res) => {
+    const { message, sessionId = AGENT_SESSION_ID } = req.body;
+    if (!message?.trim()) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+    if (runtimeState.agent.status !== 'running') {
+      startAgentRuntime();
+    }
+    const send = openSse(res);
+    try {
+      const session = getOrCreateSession(sessionId);
+      const result = await pickRuntime().runUserTurn(session, message, (ev) => send('agent', ev));
+      runtimeState.terminal.cwd = session.cwd;
+      saveSessionsToDisk();
+      send('done', { count: result.events.length });
+    } catch (error: any) {
+      console.error('Chat stream error:', error);
+      send('agent', { type: 'message', message: `Error del agente: ${error.message}` });
+      send('done', { error: error.message });
+    }
+    res.end();
+  });
+
+  app.post('/api/chat/approval/stream', async (req, res) => {
+    const { sessionId = AGENT_SESSION_ID, approved } = req.body;
+    const send = openSse(res);
+    try {
+      const session = getOrCreateSession(sessionId);
+      const result = await pickRuntime().resolveApproval(session, Boolean(approved), (ev) => send('agent', ev));
+      runtimeState.terminal.cwd = session.cwd;
+      saveSessionsToDisk();
+      send('done', { count: result.events.length });
+    } catch (error: any) {
+      console.error('Approval stream error:', error);
+      send('agent', { type: 'message', message: `Error resolviendo aprobacion: ${error.message}` });
+      send('done', { error: error.message });
+    }
+    res.end();
+  });
+
   app.post('/api/chat/approval', async (req, res) => {
     const { sessionId = AGENT_SESSION_ID, approved } = req.body;
 
