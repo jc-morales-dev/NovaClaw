@@ -27,10 +27,17 @@ a real coding agent from their phone. This repository contains:
 ## What works today (web prototype)
 
 - React chat UI with agent-style interactions (Home, Chat, Terminal, Settings, Logs).
-- Agent loop driven by the configured remote model (MiniMax 2.5 via OpenCode Zen).
-- Local tools: `terminal.run`, `file.read`, `file.write`, `file.list`,
-  `file.search`, `workspace.mkdir`.
-- Approval gate for sensitive actions (destructive shell commands, writes
+- Agent loop with NATIVE function-calling (like Claude Code/Codex), extended
+  thinking for Claude models, and an engineering methodology system prompt
+  (explore → surgical edit → verify).
+- Tools: `terminal.run`, `file.read`, `file.edit` (surgical old→new replacement),
+  `file.write`, `file.grep` (content search), `file.list`, `file.search`,
+  `workspace.mkdir`, `web.fetch` (read docs/APIs), `subagent.run` (delegate
+  self-contained subtasks to a fresh sub-agent), plus phone tools
+  (`phone.location`, `phone.contacts`, `phone.photo`).
+- Project memory: a `NOVACLAW.md` at the workspace root is injected into the
+  system prompt every turn (like CLAUDE.md) and the agent maintains it.
+- Approval gate for sensitive actions (destructive shell commands, writes/edits
   outside the workspace, writes to critical config files).
 - 256 KB hard cap on `file.read` and automatic conversation compaction.
 - Local heuristic fallback when the remote model is unreachable.
