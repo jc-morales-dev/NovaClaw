@@ -171,12 +171,28 @@ function isInternalToolCall(content: string): boolean {
   );
 }
 
+// Entrada de sistema con el plan de tareas ({kind:'todo', todos:[...]}). Se usa
+// para restaurar la tarjeta de PLAN al reabrir una conversación guardada.
+function parseTodoEntry(content: string): TodoItem[] | null {
+  const parsed = safeJsonParse(content);
+  if (!parsed || typeof parsed !== 'object') return null;
+  const record = parsed as Record<string, unknown>;
+  if (record.kind !== 'todo' || !Array.isArray(record.todos)) return null;
+  return (record.todos as any[])
+    .map((t) => ({
+      content: String(t?.content ?? '').trim(),
+      status: (['pending', 'in_progress', 'completed'].includes(t?.status) ? t.status : 'pending') as TodoStatus,
+    }))
+    .filter((t) => t.content);
+}
+
 function buildMessagesFromServerHistory(
   history: SessionHistoryEntry[],
   pendingApproval: PendingApprovalSnapshot,
   welcomeMessage: string,
 ): Message[] {
   const restoredMessages: Message[] = [];
+  let lastTodos: TodoItem[] | null = null;
 
   history.forEach((entry, index) => {
     const id = Date.now() + index;
@@ -203,6 +219,12 @@ function buildMessagesFromServerHistory(
       return;
     }
 
+    // Entrada de sistema: puede ser un plan de tareas o un resultado de tool.
+    const todos = parseTodoEntry(entry.content);
+    if (todos) {
+      lastTodos = todos; // guardamos el último plan para restaurar la tarjeta
+      return;
+    }
     const toolExecution = parseToolExecutionMessage(entry.content);
     if (toolExecution) {
       restoredMessages.push({
@@ -212,6 +234,11 @@ function buildMessagesFromServerHistory(
       });
     }
   });
+
+  // Restaurar la tarjeta de PLAN (último estado) al reabrir la conversación.
+  if (lastTodos && (lastTodos as TodoItem[]).length > 0) {
+    restoredMessages.push({ id: Date.now() + history.length, role: 'assistant', todos: lastTodos });
+  }
 
   if (pendingApproval) {
     restoredMessages.push({

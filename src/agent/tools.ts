@@ -607,6 +607,34 @@ export function createLocalToolExecutor() {
       }
     }
 
+    if (call.tool === 'phone.calendar') {
+      const days = Math.max(1, Math.min(365, Math.floor(Number(call.arguments.days) || 14)));
+      try {
+        const data = await callNativeTool(`/calendar?days=${days}`);
+        const events = Array.isArray(data.events) ? data.events : [];
+        const list = events
+          .map((e: any) => `- ${e.start}${e.allDay ? ' (todo el día)' : ''}: ${e.title}${e.location ? ` @ ${e.location}` : ''}`)
+          .join('\n');
+        return {
+          name: 'phone.calendar',
+          command: `calendar ${days}d`,
+          status: 'success',
+          output: events.length
+            ? `${data.count} evento(s) en los próximos ${days} días:\n${list}`
+            : `No hay eventos en los próximos ${days} días.`,
+          cwd: context.cwd,
+        };
+      } catch (error: any) {
+        return {
+          name: 'phone.calendar',
+          command: `calendar ${days}d`,
+          status: 'error',
+          output: error?.message ?? 'Could not read calendar.',
+          cwd: context.cwd,
+        };
+      }
+    }
+
     if (call.tool === 'phone.photo') {
       const facing = String(call.arguments.facing ?? 'back');
       try {

@@ -134,6 +134,15 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     },
   },
   {
+    name: 'phone_calendar',
+    description:
+      "Read the user's upcoming calendar events for the next N days (title, date/time, location). Use when the user asks about their agenda, meetings or what they have coming up. Needs the Calendar connector.",
+    parameters: {
+      type: 'object',
+      properties: { days: { type: 'number', description: 'How many days ahead to look (default 14).' } },
+    },
+  },
+  {
     name: 'image_view',
     description:
       'Look at an image file (jpg, png, webp, gif) and attach it so you can actually SEE it — describe it, read text in it, analyze a screenshot or photo. Use for images under /sdcard/DCIM, /sdcard/Pictures, downloads, or a photo you just took.',
@@ -204,6 +213,7 @@ export const TOOL_NAME_TO_DOT: Record<string, string> = {
   phone_location: 'phone.location',
   phone_contacts: 'phone.contacts',
   phone_photo: 'phone.photo',
+  phone_calendar: 'phone.calendar',
   image_view: 'image.view',
   web_fetch: 'web.fetch',
   subagent_run: 'subagent.run',

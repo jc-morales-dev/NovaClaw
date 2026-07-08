@@ -105,6 +105,7 @@ class NativeToolsServer(private val context: Context, private val token: String 
                         "/ping" -> JSONObject().put("ok", true)
                         "/location" -> if (authed) getLocation() else forbidden()
                         "/contacts" -> if (authed) getContacts(query["q"] ?: query["query"] ?: "") else forbidden()
+                        "/calendar" -> if (authed) getCalendar(query["days"] ?: "14") else forbidden()
                         "/photo" -> if (authed) takePhoto(query["facing"] ?: "back") else forbidden()
                         else -> JSONObject().put("error", "unknown endpoint: $path")
                     }
@@ -329,6 +330,49 @@ class NativeToolsServer(private val context: Context, private val token: String 
             }
         }
         return JSONObject().put("count", results.length()).put("contacts", results)
+    }
+
+    // ── Calendario ────────────────────────────────────────────────────────────
+    private fun getCalendar(daysStr: String): JSONObject {
+        if (!granted(Manifest.permission.READ_CALENDAR)) {
+            return JSONObject().put("error", "calendar permission not granted — enable the Calendar connector in Settings")
+        }
+        val days = (daysStr.toLongOrNull() ?: 14L).coerceIn(1L, 365L)
+        val now = System.currentTimeMillis()
+        val end = now + days * 24L * 60L * 60L * 1000L
+        val results = JSONArray()
+        val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale("es"))
+
+        val builder = android.provider.CalendarContract.Instances.CONTENT_URI.buildUpon()
+        android.content.ContentUris.appendId(builder, now)
+        android.content.ContentUris.appendId(builder, end)
+        val projection = arrayOf(
+            android.provider.CalendarContract.Instances.TITLE,
+            android.provider.CalendarContract.Instances.BEGIN,
+            android.provider.CalendarContract.Instances.END,
+            android.provider.CalendarContract.Instances.EVENT_LOCATION,
+            android.provider.CalendarContract.Instances.ALL_DAY,
+        )
+        try {
+            val cursor = context.contentResolver.query(
+                builder.build(), projection, null, null,
+                "${android.provider.CalendarContract.Instances.BEGIN} ASC",
+            )
+            cursor?.use {
+                while (it.moveToNext() && results.length() < 100) {
+                    val o = JSONObject()
+                    o.put("title", it.getString(0) ?: "(sin título)")
+                    o.put("start", fmt.format(java.util.Date(it.getLong(1))))
+                    o.put("end", fmt.format(java.util.Date(it.getLong(2))))
+                    it.getString(3)?.let { loc -> if (loc.isNotBlank()) o.put("location", loc) }
+                    o.put("allDay", it.getInt(4) == 1)
+                    results.put(o)
+                }
+            }
+        } catch (e: SecurityException) {
+            return JSONObject().put("error", "calendar permission denied")
+        }
+        return JSONObject().put("count", results.length()).put("events", results)
     }
 
     // ── Cámara (captura headless con Camera2) ─────────────────────────────────
