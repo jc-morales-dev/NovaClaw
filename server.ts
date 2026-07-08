@@ -260,6 +260,28 @@ function getOrCreateSession(sessionId: string): AgentSession {
   return session;
 }
 
+/**
+ * Rebobina la conversación al punto ANTES de la (userIndex)-ésima pregunta del
+ * usuario (0-based): borra esa entrada y todo lo que vino después. Así el usuario
+ * puede editar una pregunta vieja y regenerar desde ahí (como el rewind de Claude).
+ */
+function rewindSession(session: AgentSession, userIndex: number): void {
+  let count = 0;
+  let cutAt = -1;
+  for (let i = 0; i < session.history.length; i += 1) {
+    if (session.history[i].role === 'user') {
+      if (count === userIndex) { cutAt = i; break; }
+      count += 1;
+    }
+  }
+  if (cutAt >= 0) {
+    session.history = session.history.slice(0, cutAt);
+  }
+  // Descartar cualquier aprobación o reanudación pendiente del tramo borrado.
+  session.pendingApproval = null;
+  (session as any).native = undefined;
+}
+
 function overrideConsole() {
   const originalLog = console.log;
   const originalError = console.error;
@@ -903,17 +925,22 @@ async function startServer() {
     if (runtimeState.agent.status !== 'running') {
       startAgentRuntime();
     }
-    // Botón Detener: si el cliente cierra la conexión, abortamos el turno.
+    // Botón Detener: abortamos SOLO si el cliente cierra la conexión ANTES de
+    // que el turno termine. Ojo: se usa res.on('close') (no req.on('close'),
+    // que se dispara apenas se lee el body POST y abortaría de inmediato).
     const controller = new AbortController();
-    req.on('close', () => controller.abort());
+    let finished = false;
+    res.on('close', () => { if (!finished) controller.abort(); });
     const send = openSse(res);
     try {
       const session = getOrCreateSession(sessionId);
       const result = await pickRuntime().runUserTurn(session, message, (ev) => send('agent', ev), controller.signal);
+      finished = true;
       runtimeState.terminal.cwd = session.cwd;
       saveSessionsToDisk();
       send('done', { count: result.events.length });
     } catch (error: any) {
+      finished = true;
       console.error('Chat stream error:', error);
       send('agent', { type: 'message', message: `Error del agente: ${error.message}` });
       send('done', { error: error.message });
@@ -924,15 +951,18 @@ async function startServer() {
   app.post('/api/chat/approval/stream', async (req, res) => {
     const { sessionId = AGENT_SESSION_ID, approved } = req.body;
     const controller = new AbortController();
-    req.on('close', () => controller.abort());
+    let finished = false;
+    res.on('close', () => { if (!finished) controller.abort(); });
     const send = openSse(res);
     try {
       const session = getOrCreateSession(sessionId);
       const result = await pickRuntime().resolveApproval(session, Boolean(approved), (ev) => send('agent', ev), controller.signal);
+      finished = true;
       runtimeState.terminal.cwd = session.cwd;
       saveSessionsToDisk();
       send('done', { count: result.events.length });
     } catch (error: any) {
+      finished = true;
       console.error('Approval stream error:', error);
       send('agent', { type: 'message', message: `Error resolviendo aprobacion: ${error.message}` });
       send('done', { error: error.message });
@@ -960,6 +990,19 @@ async function startServer() {
         ],
       });
     }
+  });
+
+  // Rebobinar: truncar la conversación en la (userIndex)-ésima pregunta.
+  app.post('/api/chat/rewind', (req, res) => {
+    const { sessionId = AGENT_SESSION_ID, userIndex } = req.body ?? {};
+    const idx = Number(userIndex);
+    if (!Number.isInteger(idx) || idx < 0) {
+      return res.status(400).json({ error: 'userIndex inválido' });
+    }
+    const session = getOrCreateSession(sessionId);
+    rewindSession(session, idx);
+    saveSessionsToDisk();
+    return res.json({ success: true, history: session.history });
   });
 
   app.post('/api/chat/reset', (req, res) => {

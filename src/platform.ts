@@ -63,6 +63,8 @@ interface PlatformAdapter {
  approveActionStream(sessionId: string, approved: boolean, onEvent: (ev: ChatEvent) => void, signal?: AbortSignal): Promise<ChatResponse>;
  getChatHistory(sessionId: string): Promise<ChatHistoryResponse>;
  resetChat(sessionId: string): Promise<void>;
+ /** Rebobina: trunca la conversación en la userIndex-ésima pregunta del usuario. */
+ rewindToUserMessage(sessionId: string, userIndex: number): Promise<void>;
  runTerminal(command: string, cwd?: string): Promise<TerminalResult>;
  getLogs(): Promise<string[]>;
  clearLogs(): Promise<void>;
@@ -174,6 +176,9 @@ const webAdapter: PlatformAdapter = {
  },
  async resetChat(sessionId) {
  await fetch('/api/chat/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }) });
+ },
+ async rewindToUserMessage(sessionId, userIndex) {
+ await fetch('/api/chat/rewind', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, userIndex }) });
  },
  async runTerminal(command, cwd) {
  const r = await fetch('/api/terminal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, cwd }) });
@@ -501,6 +506,24 @@ const capacitorAdapter: PlatformAdapter = {
 
  async resetChat(sessionId: string): Promise<void> {
  capacitorSessions.delete(sessionId);
+ persistSessions(capacitorSessions);
+ },
+
+ async rewindToUserMessage(sessionId: string, userIndex: number): Promise<void> {
+ const session = capacitorSessions.get(sessionId);
+ if (!session) return;
+ let count = 0;
+ let cutAt = -1;
+ for (let i = 0; i < session.history.length; i += 1) {
+ if (session.history[i].role === 'user') {
+ if (count === userIndex) { cutAt = i; break; }
+ count += 1;
+ }
+ }
+ if (cutAt >= 0) session.history = session.history.slice(0, cutAt);
+ session.pendingApproval = null;
+ (session as any).native = undefined;
+ capacitorSessions.set(sessionId, session);
  persistSessions(capacitorSessions);
  },
 

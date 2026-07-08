@@ -11,6 +11,7 @@ import {
   FolderTree,
   History,
   Paperclip,
+  Pencil,
   Plus,
   Sparkles,
   Square,
@@ -521,6 +522,35 @@ export default function ChatView() {
     abortRef.current = null;
   };
 
+  // Rebobinar/editar: al editar una pregunta, la conversación vuelve a ese punto
+  // (se borra esa pregunta y todo lo posterior) y el texto va al input para reeditar.
+  const handleEditMessage = async (messageId: number) => {
+    if (isTyping) return;
+    const idx = messages.findIndex((m) => m.id === messageId);
+    if (idx === -1 || messages[idx].role !== 'user') return;
+
+    // Índice de esta pregunta entre TODAS las preguntas del usuario (0-based).
+    const userIndex = messages.slice(0, idx).filter((m) => m.role === 'user').length;
+    const original = messages[idx].content ?? '';
+
+    try {
+      await platform.rewindToUserMessage(sessionId, userIndex);
+    } catch {
+      // si el rewind del server falla igual truncamos la UI para no confundir
+    }
+    // Truncar la UI desde esa pregunta (inclusive) y cargar el texto al input.
+    setMessages((prev) => prev.slice(0, idx));
+    setInput(original);
+    requestAnimationFrame(() => {
+      const ta = document.querySelector<HTMLTextAreaElement>('textarea');
+      if (ta) {
+        ta.focus();
+        ta.style.height = 'auto';
+        ta.style.height = `${Math.min(ta.scrollHeight, 120)}px`;
+      }
+    });
+  };
+
   const submitText = async (rawText: string) => {
     const userText = rawText.trim();
     if (!userText || isTyping) return;
@@ -733,10 +763,21 @@ export default function ChatView() {
             }
             if (msg.role === 'user') {
               return (
-                <div key={msg.id} className="flex justify-end">
+                <div key={msg.id} className="flex flex-col items-end gap-1">
                   <div className="max-w-[82%] bg-zinc-800/80 text-zinc-100 rounded-2xl rounded-br-md px-4 py-2.5 text-[15px] leading-relaxed whitespace-pre-wrap break-words">
                     {msg.content}
                   </div>
+                  {!isTyping && (
+                    <button
+                      type="button"
+                      onClick={() => handleEditMessage(msg.id)}
+                      aria-label="Editar y rebobinar"
+                      className="inline-flex items-center gap-1.5 text-[12px] text-zinc-500 hover:text-zinc-300 transition-colors py-0.5 pr-1"
+                    >
+                      <Pencil size={12} strokeWidth={2.2} />
+                      <span>Editar</span>
+                    </button>
+                  )}
                 </div>
               );
             }
