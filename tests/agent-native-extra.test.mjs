@@ -103,4 +103,40 @@ const noopExecutor = async (call) => ({
   assert.ok(hasSummary, 'debe quedar una entrada de resumen');
 }
 
+// ── narración intermedia NO se muestra ni se guarda: una sola respuesta final ──
+{
+  // Turno 1: el modelo "narra" (texto) mientras llama una tool. Turno 2: idem.
+  // Turno 3: respuesta final SIN tools. El usuario debe ver UN solo mensaje.
+  let turn = 0;
+  const fakeModel = async () => {
+    turn += 1;
+    if (turn === 1) {
+      return { text: 'Buscando contactos…', toolCalls: [{ id: 'a', name: 'phone_contacts', args: { query: 'Roxy' } }] };
+    }
+    if (turn === 2) {
+      return { text: 'No encontré, sigo buscando…', toolCalls: [{ id: 'b', name: 'phone_contacts', args: { query: '' } }] };
+    }
+    return { text: 'Acá está el resultado final.' };
+  };
+  const runtime = createNativeAgentRuntime({
+    workspaceRoot: os.tmpdir(),
+    getConfig: () => ({ providerId: 'x', apiKey: 'x', model: 'm' }),
+    executeToolCall: noopExecutor,
+    callModel: fakeModel,
+  });
+  const session = createAgentSession('single-answer', os.tmpdir());
+  const result = await runtime.runUserTurn(session, 'buscá a Roxy');
+
+  const messageEvents = result.events.filter((e) => e.type === 'message');
+  assert.equal(messageEvents.length, 1, 'solo debe emitirse UN mensaje (la respuesta final)');
+  assert.equal(messageEvents[0].message, 'Acá está el resultado final.');
+  // La narración intermedia no debe quedar guardada como respuesta del asistente.
+  const assistantEntries = session.history.filter((e) => e.role === 'assistant');
+  assert.equal(assistantEntries.length, 1, 'solo la respuesta final va al historial');
+  assert.ok(!session.history.some((e) => e.role === 'assistant' && /sigo buscando/i.test(e.content)),
+    'la cháchara intermedia no debe persistirse');
+  // Las tools sí se muestran (los chips de ejecución).
+  assert.equal(result.events.filter((e) => e.type === 'toolExecution').length, 2, 'los 2 tool calls sí se muestran');
+}
+
 console.log('agent-native-extra.test.mjs passed');

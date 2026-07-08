@@ -318,37 +318,81 @@ function TodoListBlock({ msg }: { msg: Message }) {
   );
 }
 
+// Etiqueta legible para cada herramienta (en vez del nombre crudo PHONE.CONTACTS).
+const TOOL_LABELS: Record<string, string> = {
+  'terminal.run': 'Terminal',
+  'file.read': 'Leer',
+  'file.write': 'Escribir',
+  'file.edit': 'Editar',
+  'file.list': 'Listar',
+  'file.search': 'Buscar archivo',
+  'file.grep': 'Buscar',
+  'workspace.mkdir': 'Crear carpeta',
+  'web.fetch': 'Web',
+  'phone.location': 'Ubicación',
+  'phone.contacts': 'Contactos',
+  'phone.photo': 'Foto',
+  'image.view': 'Ver imagen',
+  'subagent.run': 'Subagente',
+};
+
+// Convierte (nombre, command) en una etiqueta + un detalle legible en línea,
+// al estilo de Claude Code: "Terminal  ls -la", "Contactos  Roxy", etc.
+function presentTool(name: string, command: string): { label: string; detail: string } {
+  const label = TOOL_LABELS[name] ?? name.replace(/\./g, ' ');
+  let detail = (command ?? '').trim();
+  if (name === 'phone.contacts') {
+    detail = detail.replace(/^contacts\s*/i, '').trim() || 'todos';
+  } else if (name === 'phone.location') {
+    detail = '';
+  } else if (name === 'phone.photo') {
+    detail = detail.replace(/^photo\s*/i, '').trim();
+  } else if (name === 'file.grep' || name === 'file.search') {
+    const parts = detail.split(' :: ');
+    detail = parts[1] ?? detail; // el patrón / la consulta
+  }
+  return { label, detail };
+}
+
 function ToolExecutionBlock({ msg }: { msg: Message }) {
   const [isOpen, setIsOpen] = useState(false);
 
   if (!msg.toolExecution) return null;
   const { name, command, status, output } = msg.toolExecution;
+  const { label, detail } = presentTool(name, command);
+  const hasBody = Boolean((command && command.trim()) || (output && output.trim()));
 
   return (
-    <div className="mb-2 max-w-[90%] w-full bg-[#0D0D0D] border border-zinc-800 rounded-xl overflow-hidden font-mono text-sm shadow-xl ml-2 transition-all">
+    <div className="mb-1.5 max-w-[92%] w-full ml-2">
       <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center justify-between px-4 py-2.5 bg-zinc-900/80 hover:bg-zinc-800/80 transition-colors border-b border-zinc-800 cursor-pointer"
+        onClick={() => hasBody && setIsOpen(!isOpen)}
+        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl bg-[#111110] border border-white/[0.08] transition-colors text-left ${hasBody ? 'hover:border-white/20 cursor-pointer' : 'cursor-default'}`}
       >
-        <div className="flex items-center gap-2 text-zinc-400">
-          <TerminalIcon size={14} />
-          <span className="text-xs uppercase tracking-wider">{name}</span>
-          {isOpen ? <ChevronDown size={14} className="ml-1" /> : <ChevronRight size={14} className="ml-1" />}
-        </div>
-        <div className="flex items-center gap-2">
-          {status === 'success' && <span className="text-emerald-500 text-[11px] uppercase tracking-wider font-semibold">Exito</span>}
-          {status === 'error' && <span className="text-red-500 text-[11px] uppercase tracking-wider font-semibold">Error</span>}
-        </div>
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${status === 'error' ? 'bg-red-500' : 'bg-emerald-500'}`} />
+        <TerminalIcon size={13} className="text-zinc-500 shrink-0" />
+        <span className="text-[13px] font-medium text-zinc-300 shrink-0">{label}</span>
+        {detail && (
+          <span className="text-[12.5px] font-mono text-zinc-500 truncate min-w-0 flex-1">{detail}</span>
+        )}
+        {!detail && <span className="flex-1" />}
+        {hasBody &&
+          (isOpen ? (
+            <ChevronDown size={14} className="text-zinc-600 shrink-0" />
+          ) : (
+            <ChevronRight size={14} className="text-zinc-600 shrink-0" />
+          ))}
       </button>
 
-      {isOpen && (
-        <div className="p-4 space-y-2 text-zinc-300">
-          <div className="flex gap-2 items-start">
-            <span className="text-[#FFB25C] mt-[2px]">{'>'}</span>
-            <span className="text-zinc-100 leading-relaxed font-semibold break-words">{command}</span>
-          </div>
-          {output && (
-            <div className="text-zinc-500 text-[13px] whitespace-pre-wrap mt-3 pl-4 border-l-2 border-zinc-800 overflow-x-auto leading-relaxed">
+      {isOpen && hasBody && (
+        <div className="mt-1 ml-3 pl-3 border-l-2 border-white/[0.08] space-y-2 py-1">
+          {command && command.trim() && (
+            <div className="font-mono text-[12.5px] text-zinc-300 break-words whitespace-pre-wrap leading-relaxed">
+              <span className="text-[#FFB25C]">{'> '}</span>
+              {command}
+            </div>
+          )}
+          {output && output.trim() && (
+            <div className="font-mono text-[12px] text-zinc-500 whitespace-pre-wrap overflow-x-auto leading-relaxed max-h-72 overflow-y-auto">
               {output}
             </div>
           )}
