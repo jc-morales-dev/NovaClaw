@@ -29,6 +29,11 @@ const zenConfig = {
   model: process.env.ZEN_MODEL ?? 'claude-haiku-4-5',
 };
 
+// Token compartido app↔agente. Lo genera la capa nativa (Kotlin, TokenStore) y lo
+// pasa por env NOVACLAW_TOKEN. En dev (PC) queda vacío y NO se exige. Protege
+// /api/* y /pty de que OTRA app del teléfono le hable al agente por loopback.
+const AGENT_TOKEN = process.env.NOVACLAW_TOKEN || '';
+
 /** Mantiene baseUrl coherente con el proveedor elegido. */
 function syncBaseUrlToProvider() {
   const provider = getProvider(zenConfig.provider);
@@ -799,6 +804,12 @@ function attachPtyWebSocket(server: HttpServer) {
 
   wss.on('connection', (ws: WebSocket, req) => {
     const url = new URL(req.url ?? '/pty', 'http://localhost');
+    // Auth: la terminal es una shell real; solo la UI de la app (con el token)
+    // puede abrirla. Sin token configurado (dev) no se exige.
+    if (AGENT_TOKEN && url.searchParams.get('token') !== AGENT_TOKEN) {
+      try { ws.close(1008, 'forbidden'); } catch {}
+      return;
+    }
     const cols = clampInt(url.searchParams.get('cols'), 80, 20, 500);
     const rows = clampInt(url.searchParams.get('rows'), 24, 5, 300);
 
@@ -856,6 +867,15 @@ async function startServer() {
   const port = Number(process.env.PORT) || 3000;
 
   app.use(express.json());
+
+  // Autenticación por token en TODO /api/*. Solo la UI de la app (que recibe el
+  // token inyectado en el HTML) puede llamar al agente. Sin token (dev) se saltea.
+  app.use('/api', (req, res, next) => {
+    if (!AGENT_TOKEN) return next();
+    const provided = req.headers['x-nova-token'] ?? req.query.token;
+    if (provided !== AGENT_TOKEN) return res.status(403).json({ error: 'forbidden' });
+    next();
+  });
 
   app.get('/api/runtime/status', async (_req, res) => {
     if (!opencodeInstallProcess && !opencodeRuntimeProcess) {
@@ -1283,14 +1303,23 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = process.env.NOVACLAW_DIST || path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+    // index:false → servimos el index.html nosotros para INYECTAR el token, que la
+    // UI (webAdapter) reenvía en cada llamada a /api. Los assets (js/css) van normal.
+    app.use(express.static(distPath, { index: false }));
+    let indexHtml = '';
+    try { indexHtml = fs.readFileSync(path.join(distPath, 'index.html'), 'utf8'); } catch {}
+    const injectedHtml = AGENT_TOKEN
+      ? indexHtml.replace('</head>', `<script>window.__NOVA_TOKEN__=${JSON.stringify(AGENT_TOKEN)};</script></head>`)
+      : indexHtml;
     app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      res.type('html').send(injectedHtml || '<!doctype html><title>NovaClaw</title>');
     });
   }
 
-  const server = app.listen(port, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${port}`);
+  // Bind SOLO a loopback: el agente ejecuta comandos y toca el teléfono; jamás
+  // debe quedar expuesto a la red WiFi/LTE. La UI lo alcanza en 127.0.0.1.
+  const server = app.listen(port, '127.0.0.1', () => {
+    console.log(`Server running on http://127.0.0.1:${port}`);
   });
 
   attachPtyWebSocket(server);

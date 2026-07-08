@@ -22,7 +22,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var runtime: RuntimeManager
     private lateinit var shizuku: ShizukuManager
     private lateinit var connectors: ConnectorBridge
-    private val nativeTools by lazy { NativeToolsServer(applicationContext) }
+    private val nativeTools by lazy { NativeToolsServer(applicationContext, TokenStore.get(this)) }
     @Volatile private var shizukuStatus = ShizukuManager.Status.NOT_RUNNING
     private val isRunning = AtomicBoolean(false)
 
@@ -134,11 +134,40 @@ class MainActivity : AppCompatActivity() {
         val wv = binding.webView
         wv.settings.javaScriptEnabled = true
         wv.settings.domStorageEnabled = true
+        // Hardening: el WebView no necesita leer file:// ni content:// del dispositivo.
+        wv.settings.allowFileAccess = false
+        wv.settings.allowContentAccess = false
+        @Suppress("DEPRECATION")
+        run {
+            wv.settings.allowFileAccessFromFileURLs = false
+            wv.settings.allowUniversalAccessFromFileURLs = false
+        }
         // Puente de conectores: la UI pide permisos reales vía window.NovaClawNative.
         wv.addJavascriptInterface(connectors, "NovaClawNative")
         // Mismo fondo que la UI para que no haya flash blanco al aparecer.
         wv.setBackgroundColor(android.graphics.Color.parseColor("#0B0908"))
         wv.webViewClient = object : WebViewClient() {
+            // Solo se navega dentro del agente local (127.0.0.1). Cualquier link
+            // externo se abre en el navegador del sistema, NUNCA dentro del WebView
+            // (donde tendría acceso al puente NovaClawNative).
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: android.webkit.WebResourceRequest?,
+            ): Boolean {
+                val uri = request?.url ?: return false
+                val host = uri.host ?: ""
+                if (host == "127.0.0.1" || host == "localhost") return false
+                return try {
+                    startActivity(
+                        android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                    true
+                } catch (_: Exception) {
+                    true // sin app que lo abra: no cargarlo en el WebView igualmente
+                }
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 // El splash se va recién cuando la UI terminó de cargar; el
                 // margen extra cubre la animación de bienvenida de React para

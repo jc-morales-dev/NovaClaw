@@ -17,6 +17,34 @@ function resolveTargetPath(inputPath: string, cwd: string): string {
   return path.isAbsolute(inputPath) ? inputPath : path.resolve(cwd, inputPath);
 }
 
+// Archivos con secretos que el agente NUNCA debe leer (API key, sesiones,
+// credenciales de firma). Se bloquean por nombre para cortar la fuga de key
+// vía file.read/file.grep + web.fetch (inyección de prompt).
+const PROTECTED_BASENAMES = new Set([
+  'novaclaw.config.json',
+  'novaclaw.sessions.json',
+  'keystore.properties',
+]);
+function isProtectedPath(p: string): boolean {
+  const base = path.basename(p).toLowerCase();
+  if (PROTECTED_BASENAMES.has(base)) return true;
+  return base.endsWith('.jks') || base.endsWith('.keystore');
+}
+
+// SSRF guard: web.fetch no debe alcanzar loopback ni redes internas (sus propios
+// servidores 127.0.0.1:8088/8099, la LAN, o metadata de nube 169.254.x).
+function isBlockedFetchHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h === '0.0.0.0' || h === '::1' || h === '::') return true;
+  if (/^127\./.test(h)) return true;
+  if (/^10\./.test(h)) return true;
+  if (/^192\.168\./.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
+  if (/^169\.254\./.test(h)) return true;
+  return /^fe80:/i.test(h) || /^fc/i.test(h) || /^fd/i.test(h);
+}
+
 /**
  * Formatea el contenido de un archivo con números de línea (estilo `cat -n`),
  * respetando offset/limit (1-based) para leer ventanas de archivos grandes.
@@ -88,8 +116,10 @@ function formatWithLineNumbers(
 const NATIVE_TOOLS_BASE = process.env.NOVACLAW_NATIVE_URL || 'http://127.0.0.1:8099';
 
 async function callNativeTool(pathAndQuery: string): Promise<any> {
+  const token = process.env.NOVACLAW_TOKEN || '';
   const res = await fetch(`${NATIVE_TOOLS_BASE}${pathAndQuery}`, {
     signal: AbortSignal.timeout(15000),
+    headers: token ? { 'X-Nova-Token': token } : undefined,
   });
   const data = await res.json();
   if (data && data.error) {
@@ -191,6 +221,15 @@ export function createLocalToolExecutor() {
 
     if (call.tool === 'file.read') {
       const targetPath = resolveTargetPath(String(call.arguments.path ?? ''), context.cwd);
+      if (isProtectedPath(targetPath)) {
+        return {
+          name: 'file.read',
+          command: targetPath,
+          status: 'error',
+          output: 'Access denied: this file holds secrets (API key / credentials) and cannot be read.',
+          cwd: context.cwd,
+        };
+      }
       const MAX_READ_BYTES = 256 * 1024; // 256 KB hard cap to protect the agent context window.
       const MAX_LINES = 2000; // límite de líneas por lectura sin rango explícito
       const stat = await fs.stat(targetPath);
@@ -321,6 +360,7 @@ export function createLocalToolExecutor() {
 
       async function grepFile(filePath: string): Promise<void> {
         if (matches.length >= maxResults || BINARY_EXT.test(filePath)) return;
+        if (isProtectedPath(filePath)) return; // no filtrar secretos (API key, etc.)
         let stat;
         try {
           stat = await fs.stat(filePath);
@@ -403,6 +443,17 @@ export function createLocalToolExecutor() {
           command: url,
           status: 'error',
           output: 'Only http(s) URLs are supported.',
+          cwd: context.cwd,
+        };
+      }
+      let parsedHost = '';
+      try { parsedHost = new URL(url).hostname; } catch { parsedHost = ''; }
+      if (!parsedHost || isBlockedFetchHost(parsedHost)) {
+        return {
+          name: 'web.fetch',
+          command: url,
+          status: 'error',
+          output: 'Blocked: web_fetch cannot reach localhost or private/internal network addresses (SSRF protection).',
           cwd: context.cwd,
         };
       }

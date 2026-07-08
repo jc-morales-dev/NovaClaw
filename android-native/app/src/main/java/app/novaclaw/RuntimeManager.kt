@@ -233,6 +233,9 @@ class RuntimeManager(private val context: Context) {
         // Ruta del config del proveedor que la pantalla de Ajustes escribe/lee
         // (mismo archivo interno que applyProviderConfig prioriza al arrancar).
         env["NOVACLAW_CONFIG"] = File(paths.filesDir, "novaclaw.config.json").absolutePath
+        // Token secreto: el agente exige X-Nova-Token en /api y /pty, y lo reenvía
+        // al servidor nativo 8099. Sin esto, otra app del teléfono podría hablarle.
+        env["NOVACLAW_TOKEN"] = TokenStore.get(context)
 
         // Config del proveedor de IA (fuera de git): novaclaw.config.json
         // { "baseUrl": "...", "apiKey": "...", "model": "..." }

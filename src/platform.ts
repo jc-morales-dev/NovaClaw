@@ -141,24 +141,36 @@ async function consumeSse(res: Response, onEvent: (ev: ChatEvent) => void): Prom
 
 // ── Web adapter ───────────────────────────────────────────────────────────────
 
+// Token que el server inyecta en el HTML (window.__NOVA_TOKEN__). Se reenvía en
+// cada llamada a /api para que solo esta UI pueda hablar con el agente.
+function novaToken(): string {
+ return (typeof window !== 'undefined' && (window as any).__NOVA_TOKEN__) || '';
+}
+function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
+ const t = novaToken();
+ const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined) };
+ if (t) headers['X-Nova-Token'] = t;
+ return fetch(input, { ...init, headers });
+}
+
 const webAdapter: PlatformAdapter = {
  kind: 'web',
- async getRuntimeStatus() { const r = await fetch('/api/runtime/status'); return r.json(); },
+ async getRuntimeStatus() { const r = await apiFetch('/api/runtime/status'); return r.json(); },
  async getBootstrapStatus() { return createBootstrapStatus({ phase: 'ready', message: 'Browser prototype ready.' }); },
  async installRuntime() {},
  subscribeBootstrap(listener) { listener(createBootstrapStatus({ phase: 'ready', message: 'Browser prototype ready.' })); return () => {}; },
- async startAgent() { await fetch('/api/agent/start', { method: 'POST' }); },
+ async startAgent() { await apiFetch('/api/agent/start', { method: 'POST' }); },
  async sendChat(message, sessionId) {
- const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, sessionId }) });
+ const r = await apiFetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, sessionId }) });
  return r.json();
  },
  async approveAction(sessionId, approved) {
- const r = await fetch('/api/chat/approval', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, approved }) });
+ const r = await apiFetch('/api/chat/approval', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, approved }) });
  return r.json();
  },
  async sendChatStream(message, sessionId, onEvent, signal) {
  try {
- const r = await fetch('/api/chat/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, sessionId }), signal });
+ const r = await apiFetch('/api/chat/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, sessionId }), signal });
  if (!r.ok || !r.body) throw new Error(`stream ${r.status}`);
  const events = await consumeSse(r, onEvent);
  return { events };
@@ -173,7 +185,7 @@ const webAdapter: PlatformAdapter = {
  },
  async approveActionStream(sessionId, approved, onEvent, signal) {
  try {
- const r = await fetch('/api/chat/approval/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, approved }), signal });
+ const r = await apiFetch('/api/chat/approval/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, approved }), signal });
  if (!r.ok || !r.body) throw new Error(`stream ${r.status}`);
  const events = await consumeSse(r, onEvent);
  return { events };
@@ -185,41 +197,41 @@ const webAdapter: PlatformAdapter = {
  }
  },
  async getChatHistory(sessionId) {
- const r = await fetch(`/api/chat/history?sessionId=${encodeURIComponent(sessionId)}`);
+ const r = await apiFetch(`/api/chat/history?sessionId=${encodeURIComponent(sessionId)}`);
  return r.json();
  },
  async resetChat(sessionId) {
- await fetch('/api/chat/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }) });
+ await apiFetch('/api/chat/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }) });
  },
  async rewindToUserMessage(sessionId, userIndex) {
- await fetch('/api/chat/rewind', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, userIndex }) });
+ await apiFetch('/api/chat/rewind', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, userIndex }) });
  },
  async generateChatTitle(sessionId) {
  try {
- const r = await fetch('/api/chat/title', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }) });
+ const r = await apiFetch('/api/chat/title', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }) });
  const d = await r.json();
  return d.title || 'Nueva conversación';
  } catch { return 'Nueva conversación'; }
  },
  async runTerminal(command, cwd) {
- const r = await fetch('/api/terminal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, cwd }) });
+ const r = await apiFetch('/api/terminal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, cwd }) });
  return r.json();
  },
- async getLogs() { const r = await fetch('/api/logs'); const d = await r.json(); return d.logs ?? []; },
- async clearLogs() { await fetch('/api/logs', { method: 'DELETE' }); },
- async startOpenCode() { await fetch('/api/opencode/start', { method: 'POST' }); },
- async stopOpenCode() { await fetch('/api/opencode/stop', { method: 'POST' }); },
+ async getLogs() { const r = await apiFetch('/api/logs'); const d = await r.json(); return d.logs ?? []; },
+ async clearLogs() { await apiFetch('/api/logs', { method: 'DELETE' }); },
+ async startOpenCode() { await apiFetch('/api/opencode/start', { method: 'POST' }); },
+ async stopOpenCode() { await apiFetch('/api/opencode/stop', { method: 'POST' }); },
  async saveApiKey(_key) {},
  async hasApiKey() { return false; },
- async getConfig() { const r = await fetch('/api/config'); return r.json(); },
+ async getConfig() { const r = await apiFetch('/api/config'); return r.json(); },
  async saveConfig(update) {
- const r = await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(update) });
+ const r = await apiFetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(update) });
  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error ?? 'No se pudo guardar la configuración.'); }
  return r.json();
  },
- async getProviders() { const r = await fetch('/api/providers'); return r.json(); },
+ async getProviders() { const r = await apiFetch('/api/providers'); return r.json(); },
  async verifyProvider(provider, apiKey) {
- const r = await fetch('/api/provider/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, apiKey }) });
+ const r = await apiFetch('/api/provider/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, apiKey }) });
  return r.json();
  },
 };

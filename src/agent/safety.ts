@@ -38,9 +38,30 @@ const SENSITIVE_COMMAND_PATTERNS = [
   /\bzsh\s+-c\b/i,
   /\beval\b/i,
   /\bexec\b/i,
-  // Redirección que sobrescribe/append a archivos (potencialmente destructivo).
-  />\s*\/(etc|bin|usr|var|boot|root)/i,
-  />>\s*\/(etc|bin|usr|var|boot|root)/i,
+  // Intérpretes con código inline: bypass clásico de la lista negra
+  // (p.ej. `python -c "shutil.rmtree(...)"`, `node -e "fs.rmSync(...)"`).
+  /\bpython[0-9.]*\s+-c\b/i,
+  /\bnode\s+(?:-e|--eval)\b/i,
+  /\bperl\s+-e\b/i,
+  /\bruby\s+-e\b/i,
+  /\bphp\s+-r\b/i,
+  // Borrado/truncado que no usa `rm`.
+  /\bfind\b[^\n]*\s-delete\b/i,
+  /\bfind\b[^\n]*-exec\b/i,
+  /\btruncate\b/i,
+  /\bshred\b/i,
+  /\bunlink\b/i,
+  /\bgit\s+clean\b/i,
+  // Escritura en el almacenamiento del teléfono o el home (borra/pisa datos del usuario).
+  /\btee\b/i,
+  /\bxargs\b/i,
+  // Redirección que sobrescribe/append a archivos del sistema o del teléfono.
+  />\s*\/(etc|bin|usr|var|boot|root|sdcard|storage|data)/i,
+  />>\s*\/(etc|bin|usr|var|boot|root|sdcard|storage|data)/i,
+  />\s*~\//,
+  // Cambio de permisos/propietario recursivo o de apps del sistema.
+  /\bpm\s+(uninstall|clear|disable)/i,
+  /\bsettings\s+put\b/i,
 ];
 
 // Archivos críticos dentro del workspace que NUNCA deben tocarse sin aprobación.

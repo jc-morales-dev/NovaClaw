@@ -89,7 +89,10 @@ export default function TerminalView() {
 
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
       const host = window.location.host || '127.0.0.1:8088';
-      const url = `${proto}://${host}/pty?cols=${term.cols}&rows=${term.rows}`;
+      // El token (inyectado por el server en el HTML) autentica la shell /pty.
+      const token = (window as any).__NOVA_TOKEN__ || '';
+      const auth = token ? `&token=${encodeURIComponent(token)}` : '';
+      const url = `${proto}://${host}/pty?cols=${term.cols}&rows=${term.rows}${auth}`;
 
       let opened = false;
       const ws = new WebSocket(url);

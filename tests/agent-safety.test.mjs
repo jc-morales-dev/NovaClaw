@@ -116,4 +116,49 @@ assert.match(outsideWorkspaceWrite.summary, /file\.write/i);
   assert.doesNotMatch(result.output, /README\.md/);
 }
 
+// ── Bypasses de la lista negra ahora bloqueados (H2) ─────────────────────────
+{
+  const mustApprove = (command) =>
+    classifyToolCall({ tool: 'terminal.run', arguments: { command } }, { cwd: workspaceRoot, workspaceRoot }).requiresApproval;
+
+  assert.equal(mustApprove('python3 -c "import shutil; shutil.rmtree(\'/sdcard/DCIM\')"'), true, 'python -c');
+  assert.equal(mustApprove('node -e "require(\'fs\').rmSync(\'/x\',{recursive:true})"'), true, 'node -e');
+  assert.equal(mustApprove('find /sdcard -type f -delete'), true, 'find -delete');
+  assert.equal(mustApprove('echo pwned > /sdcard/Download/nota.txt'), true, 'redirección a /sdcard');
+  assert.equal(mustApprove('truncate -s 0 /sdcard/x'), true, 'truncate');
+  assert.equal(mustApprove('pm uninstall com.whatsapp'), true, 'pm uninstall');
+  // Comandos legítimos de lectura siguen sin pedir aprobación.
+  assert.equal(mustApprove('python3 script.py'), false, 'python script normal');
+  assert.equal(mustApprove('node index.js'), false, 'node script normal');
+  assert.equal(mustApprove('cat archivo.txt'), false, 'cat normal');
+}
+
+// ── Guards de tools: archivo protegido (M1) + SSRF (M1) ──────────────────────
+{
+  const execute = createLocalToolExecutor();
+  const dir = path.join(os.tmpdir(), 'claw-guard-test');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, 'novaclaw.config.json'), '{"apiKey":"sk-secreta"}', 'utf8');
+
+  const readKey = await execute(
+    { tool: 'file.read', arguments: { path: path.join(dir, 'novaclaw.config.json') } },
+    { cwd: dir, workspaceRoot: dir },
+  );
+  assert.equal(readKey.status, 'error', 'no debe leer el archivo con la key');
+  assert.doesNotMatch(readKey.output, /sk-secreta/, 'la key nunca aparece en la salida');
+
+  const ssrf = await execute(
+    { tool: 'web.fetch', arguments: { url: 'http://127.0.0.1:8099/ping' } },
+    { cwd: dir, workspaceRoot: dir },
+  );
+  assert.equal(ssrf.status, 'error', 'web.fetch a loopback bloqueado');
+  assert.match(ssrf.output, /SSRF|Blocked/i);
+
+  const ssrfLan = await execute(
+    { tool: 'web.fetch', arguments: { url: 'http://10.0.0.5/admin' } },
+    { cwd: dir, workspaceRoot: dir },
+  );
+  assert.equal(ssrfLan.status, 'error', 'web.fetch a red privada bloqueado');
+}
+
 console.log('agent-safety.test.mjs passed');

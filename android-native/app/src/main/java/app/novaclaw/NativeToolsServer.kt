@@ -44,7 +44,7 @@ import kotlin.concurrent.thread
  * Cada endpoint valida el permiso primero; si falta, responde con un mensaje
  * claro para que el agente le diga al usuario que active el conector en Ajustes.
  */
-class NativeToolsServer(private val context: Context) {
+class NativeToolsServer(private val context: Context, private val token: String = "") {
 
     companion object {
         const val PORT = 8099
@@ -87,12 +87,25 @@ class NativeToolsServer(private val context: Context) {
                 val path = target.substringBefore('?')
                 val query = parseQuery(target.substringAfter('?', ""))
 
+                // Leer las cabeceras hasta la línea en blanco y extraer el token.
+                var provided: String? = null
+                var header = reader.readLine()
+                while (!header.isNullOrEmpty()) {
+                    val ci = header.indexOf(':')
+                    if (ci > 0 && header.substring(0, ci).trim().equals("X-Nova-Token", ignoreCase = true)) {
+                        provided = header.substring(ci + 1).trim()
+                    }
+                    header = reader.readLine()
+                }
+                // Endpoints sensibles (cámara/GPS/contactos) exigen el token compartido.
+                val authed = token.isEmpty() || provided == token
+
                 val json: JSONObject = try {
                     when (path) {
-                        "/location" -> getLocation()
-                        "/contacts" -> getContacts(query["q"] ?: query["query"] ?: "")
-                        "/photo" -> takePhoto(query["facing"] ?: "back")
                         "/ping" -> JSONObject().put("ok", true)
+                        "/location" -> if (authed) getLocation() else forbidden()
+                        "/contacts" -> if (authed) getContacts(query["q"] ?: query["query"] ?: "") else forbidden()
+                        "/photo" -> if (authed) takePhoto(query["facing"] ?: "back") else forbidden()
                         else -> JSONObject().put("error", "unknown endpoint: $path")
                     }
                 } catch (e: Exception) {
@@ -129,6 +142,9 @@ class NativeToolsServer(private val context: Context) {
         out.write(body)
         out.flush()
     }
+
+    private fun forbidden(): JSONObject =
+        JSONObject().put("error", "forbidden: missing or invalid token")
 
     private fun granted(permission: String): Boolean =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
