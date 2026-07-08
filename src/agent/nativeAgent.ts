@@ -30,6 +30,7 @@ You have native tools. Call them to act — never describe what you would do, ju
    - If it fails, read the error, fix it, and run again. Iterate until it works.
    - Never claim something works without having run it.
 4. For big explorations or self-contained side tasks, delegate to subagent_run so this conversation stays focused. Give the sub-agent EVERY detail it needs (it knows nothing about this chat).
+5. For any task with 3+ steps, call todo_write FIRST to lay out the plan, then update it (one step in_progress at a time, mark completed as you finish) so the user can follow along. Skip it for trivial one-step requests.
 
 # Capabilities
 
@@ -111,12 +112,31 @@ function buildBaseMessages(session: AgentSession): AgentMessage[] {
     } else if (entry.role === 'assistant') {
       out.push({ role: 'assistant', text: entry.content });
     } else if (entry.role === 'system') {
-      // Resultado de herramienta de un turno anterior → nota para el modelo.
-      out.push({ role: 'user', text: `[tool result] ${entry.content}` });
+      // Un resumen de compactación se presenta como contexto legible; el resto
+      // (resultados de herramientas de turnos previos) como nota para el modelo.
+      let note: string | null = null;
+      try {
+        const parsed = JSON.parse(entry.content);
+        if (parsed && parsed.kind === 'history_summary' && parsed.summary) {
+          note = `[Summary of earlier work in this session]\n${parsed.summary}`;
+        } else if (parsed && parsed.kind === 'todo' && Array.isArray(parsed.todos)) {
+          const lines = parsed.todos
+            .map((t: any) => `- [${t.status === 'completed' ? 'x' : t.status === 'in_progress' ? '~' : ' '}] ${t.content}`)
+            .join('\n');
+          note = `[Current task plan]\n${lines}`;
+        }
+      } catch {
+        // no es JSON — se trata como resultado de herramienta
+      }
+      out.push({ role: 'user', text: note ?? `[tool result] ${entry.content}` });
     }
   }
   return out;
 }
+
+// Umbrales de compactación inteligente (resumen por el modelo).
+const SUMMARIZE_THRESHOLD = 44; // si el historial supera esto, resumimos
+const SUMMARIZE_KEEP_RECENT = 16; // últimas entradas que se dejan verbatim
 
 export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
   const maxIterations = options.maxIterations ?? 32;
@@ -124,6 +144,60 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
 
   function dotName(nativeName: string): string {
     return TOOL_NAME_TO_DOT[nativeName] ?? nativeName;
+  }
+
+  /**
+   * Compactación INTELIGENTE: cuando el historial se hace largo, le pide al
+   * modelo un resumen conciso de todo lo hecho hasta ahora y reemplaza las
+   * entradas viejas por ese resumen (preservando el primer pedido del usuario
+   * y las últimas N entradas verbatim). Es lo que hace Claude Code para no
+   * perder el hilo en sesiones largas. Si el resumen falla, cae al recorte simple.
+   */
+  async function compactWithSummary(session: AgentSession): Promise<void> {
+    if (session.history.length <= SUMMARIZE_THRESHOLD) return;
+
+    const firstUser = session.history.find((e) => e.role === 'user');
+    const recent = session.history.slice(-SUMMARIZE_KEEP_RECENT);
+    const toSummarize = session.history.slice(
+      firstUser ? 1 : 0,
+      session.history.length - SUMMARIZE_KEEP_RECENT,
+    );
+    if (toSummarize.length === 0) return;
+
+    const transcript = toSummarize
+      .map((e) => `${e.role.toUpperCase()}: ${e.content}`)
+      .join('\n')
+      .slice(0, 24000);
+
+    const cfg = options.getConfig();
+    try {
+      const reply = await callModel({
+        providerId: cfg.providerId,
+        apiKey: cfg.apiKey,
+        model: cfg.model,
+        system:
+          'You compress an agent conversation. Produce a concise but COMPLETE summary that preserves: the user goals, decisions made, files created/edited (with paths), commands run and their key results, and anything still pending. Write it as durable notes the agent can rely on to continue. No preamble.',
+        messages: [{ role: 'user', text: `Summarize this conversation so far:\n\n${transcript}` }],
+        maxTokens: 1024,
+      });
+      const summary = (reply.text ?? '').trim();
+      if (!summary) throw new Error('empty summary');
+
+      const summaryEntry = {
+        role: 'system' as const,
+        content: JSON.stringify({
+          kind: 'history_summary',
+          note: '[Context compacted — summary of earlier work]',
+          summary,
+        }),
+      };
+      session.history = firstUser
+        ? [firstUser, summaryEntry, ...recent]
+        : [summaryEntry, ...recent];
+    } catch {
+      // Fallback: recorte simple (mismo criterio que el runtime legacy).
+      session.history = compactHistoryIfNeeded(session.history);
+    }
   }
 
   /** System prompt del turno: base + memoria persistente del proyecto si existe. */
@@ -155,7 +229,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
           model: cfg.model,
           system: SUBAGENT_SYSTEM_PROMPT,
           messages,
-          excludeTools: ['subagent_run'],
+          excludeTools: ['subagent_run', 'todo_write'],
         });
       } catch (error: any) {
         return `[Sub-agente falló: ${error?.message ?? 'error de modelo'}]`;
@@ -264,6 +338,25 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     let i = startIndex;
     while (i < batch.length) {
       const tc = batch[i];
+
+      // Plan de tareas visible: no va al executor; emite un evento para la UI
+      // y confirma al modelo. El agente lo usa para planear y trackear pasos.
+      if (tc.name === 'todo_write') {
+        const rawTodos = Array.isArray(tc.args.todos) ? tc.args.todos : [];
+        const todos = rawTodos
+          .map((t: any) => ({
+            content: String(t?.content ?? '').trim(),
+            status: ['pending', 'in_progress', 'completed'].includes(t?.status) ? t.status : 'pending',
+          }))
+          .filter((t: any) => t.content);
+        const done = todos.filter((t: any) => t.status === 'completed').length;
+        const summary = `Plan actualizado: ${done}/${todos.length} completadas.`;
+        messages.push({ role: 'tool', toolCallId: tc.id, toolName: tc.name, result: summary });
+        session.history.push({ role: 'system', content: JSON.stringify({ kind: 'todo', todos }) });
+        events.push({ type: 'todo', todos });
+        i += 1;
+        continue;
+      }
 
       // El sub-agente se ejecuta acá adentro (necesita el modelo, no el executor).
       if (tc.name === 'subagent_run') {
@@ -374,9 +467,9 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     onEvent?: AgentEventSink,
   ): Promise<RuntimeResult> {
     session.history.push({ role: 'user', content: message });
-    // Conversaciones largas: compactar el historial persistido antes de armar
-    // el contexto, para que el turno nunca reviente la ventana del modelo.
-    session.history = compactHistoryIfNeeded(session.history);
+    // Conversaciones largas: resumir el historial con el modelo antes de armar
+    // el contexto, para que el turno nunca reviente la ventana y no se pierda el hilo.
+    await compactWithSummary(session);
     const messages = buildBaseMessages(session);
     return runLoop(session, messages, trackedEvents(onEvent));
   }

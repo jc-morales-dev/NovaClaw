@@ -25,7 +25,8 @@ import { createBootstrapStatus, type BootstrapStatus } from './bootstrap/state';
 type ChatEvent =
  | { type: 'message'; message: string }
  | { type: 'toolExecution'; toolExecution: { name: string; command: string; status: 'success' | 'error'; output?: string } }
- | { type: 'approval'; approval: { summary: string; reason: string; toolCall: { tool: string; arguments: Record<string, unknown> } } };
+ | { type: 'approval'; approval: { summary: string; reason: string; toolCall: { tool: string; arguments: Record<string, unknown> } } }
+ | { type: 'todo'; todos: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }> };
 
 type ChatResponse = { events: ChatEvent[] };
 type TerminalResult = { output: string; cwd: string };
@@ -288,6 +289,7 @@ function runtimeEventToChatEvent(ev: AgentRuntimeEvent): ChatEvent {
  if (ev.type === 'message') return { type: 'message', message: ev.message };
  if (ev.type === 'toolExecution')
  return { type: 'toolExecution', toolExecution: { name: ev.toolExecution.name, command: ev.toolExecution.command, status: ev.toolExecution.status, output: ev.toolExecution.output } };
+ if (ev.type === 'todo') return { type: 'todo', todos: ev.todos };
  return { type: 'approval', approval: { summary: ev.approval.summary, reason: ev.approval.reason, toolCall: { tool: ev.approval.toolCall.tool, arguments: ev.approval.toolCall.arguments } } };
 }
 

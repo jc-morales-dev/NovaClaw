@@ -36,7 +36,14 @@ type ApprovalEvent = {
   approval: PendingApproval;
 };
 
-export type AgentRuntimeEvent = MessageEvent | ToolExecutionEvent | ApprovalEvent;
+export type TodoItem = { content: string; status: 'pending' | 'in_progress' | 'completed' };
+
+type TodoEvent = {
+  type: 'todo';
+  todos: TodoItem[];
+};
+
+export type AgentRuntimeEvent = MessageEvent | ToolExecutionEvent | ApprovalEvent | TodoEvent;
 
 export type AgentEventSink = (event: AgentRuntimeEvent) => void;
 

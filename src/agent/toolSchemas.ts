@@ -154,6 +154,29 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     },
   },
   {
+    name: 'todo_write',
+    description:
+      'Maintain a visible task plan for a multi-step job. Call it at the start to lay out the steps, and again to update statuses as you go (mark one in_progress before working on it, completed when done). The user sees the checklist update live. Use it for non-trivial tasks with 3+ steps; skip it for single-step requests.',
+    parameters: {
+      type: 'object',
+      properties: {
+        todos: {
+          type: 'array',
+          description: 'The full task list (always send the complete list, not a delta).',
+          items: {
+            type: 'object',
+            properties: {
+              content: { type: 'string', description: 'Short imperative description of the step.' },
+              status: { type: 'string', enum: ['pending', 'in_progress', 'completed'], description: 'Current status.' },
+            },
+            required: ['content', 'status'],
+          },
+        },
+      },
+      required: ['todos'],
+    },
+  },
+  {
     name: 'subagent_run',
     description:
       'Delegate a self-contained subtask to a fresh sub-agent with its own clean context (like a research assistant). It has the same tools (except spawning more sub-agents and approval-gated actions) and returns a final text report. Use it for big explorations (e.g. "map this repo", "find all usages of X") so the main conversation stays focused. The sub-agent knows NOTHING about this conversation: include every detail it needs in the task.',
@@ -184,6 +207,7 @@ export const TOOL_NAME_TO_DOT: Record<string, string> = {
   image_view: 'image.view',
   web_fetch: 'web.fetch',
   subagent_run: 'subagent.run',
+  todo_write: 'todo.write',
 };
 
 /** Formato OpenAI: [{type:'function', function:{name,description,parameters}}] */

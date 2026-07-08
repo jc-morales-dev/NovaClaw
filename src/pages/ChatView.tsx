@@ -45,12 +45,16 @@ type ApprovalRequestMessage = {
   status: 'pending' | 'approved' | 'rejected';
 };
 
+type TodoStatus = 'pending' | 'in_progress' | 'completed';
+type TodoItem = { content: string; status: TodoStatus };
+
 export interface Message {
   id: number;
   role: 'user' | 'assistant';
   content?: string;
   toolExecution?: ToolExecutionMessage;
   approvalRequest?: ApprovalRequestMessage;
+  todos?: TodoItem[];
 }
 
 type ServerEvent =
@@ -72,6 +76,10 @@ type ServerEvent =
           arguments: Record<string, unknown>;
         };
       };
+    }
+  | {
+      type: 'todo';
+      todos: TodoItem[];
     };
 
 const sessionId = 'nova-chat-session';
@@ -183,6 +191,48 @@ function buildMessagesFromServerHistory(
   }
 
   return restoredMessages.length > 0 ? restoredMessages : createWelcomeMessage(welcomeMessage);
+}
+
+function TodoListBlock({ msg }: { msg: Message }) {
+  if (!msg.todos || msg.todos.length === 0) return null;
+  const done = msg.todos.filter((t) => t.status === 'completed').length;
+
+  return (
+    <div className="mb-2 max-w-[90%] w-full bg-[#0D0D0D] border border-[#FF7A1A]/30 rounded-xl overflow-hidden text-sm shadow-xl ml-2">
+      <div className="flex items-center justify-between px-4 py-2.5 bg-zinc-900/80 border-b border-zinc-800">
+        <span className="text-xs uppercase tracking-wider text-[#FFB25C] font-semibold">Plan</span>
+        <span className="text-[11px] text-zinc-500 tabular-nums">{done}/{msg.todos.length}</span>
+      </div>
+      <ul className="p-3 space-y-1.5">
+        {msg.todos.map((todo, i) => (
+          <li key={i} className="flex items-start gap-2.5">
+            <span
+              className={
+                todo.status === 'completed'
+                  ? 'mt-[3px] w-4 h-4 rounded-[5px] bg-emerald-500/90 text-black text-[11px] font-bold flex items-center justify-center shrink-0'
+                  : todo.status === 'in_progress'
+                    ? 'mt-[3px] w-4 h-4 rounded-[5px] border-2 border-[#FF7A1A] shrink-0 animate-pulse'
+                    : 'mt-[3px] w-4 h-4 rounded-[5px] border-2 border-zinc-700 shrink-0'
+              }
+            >
+              {todo.status === 'completed' ? '✓' : ''}
+            </span>
+            <span
+              className={
+                todo.status === 'completed'
+                  ? 'text-zinc-500 line-through leading-relaxed'
+                  : todo.status === 'in_progress'
+                    ? 'text-zinc-100 font-medium leading-relaxed'
+                    : 'text-zinc-400 leading-relaxed'
+              }
+            >
+              {todo.content}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function ToolExecutionBlock({ msg }: { msg: Message }) {
@@ -380,35 +430,31 @@ export default function ChatView() {
   }, [t.welcomeMessage]);
 
   function appendServerEvents(events: ServerEvent[]) {
-    const newMessages: Message[] = events.map((event) => {
-      const id = nextMessageId();
-      if (event.type === 'toolExecution') {
-        return {
-          id,
-          role: 'assistant',
-          toolExecution: event.toolExecution,
-        };
+    setMessages((prev) => {
+      let next = [...prev];
+      for (const event of events) {
+        // El plan de tareas es una tarjeta VIVA: si ya hay una en la
+        // conversación, la actualizamos in-place en vez de apilar otra.
+        if (event.type === 'todo') {
+          const idx = [...next].reverse().findIndex((m) => m.todos);
+          if (idx !== -1) {
+            const realIdx = next.length - 1 - idx;
+            next[realIdx] = { ...next[realIdx], todos: event.todos };
+          } else {
+            next.push({ id: nextMessageId(), role: 'assistant', todos: event.todos });
+          }
+          continue;
+        }
+        if (event.type === 'toolExecution') {
+          next.push({ id: nextMessageId(), role: 'assistant', toolExecution: event.toolExecution });
+        } else if (event.type === 'approval') {
+          next.push({ id: nextMessageId(), role: 'assistant', approvalRequest: { ...event.approval, status: 'pending' } });
+        } else {
+          next.push({ id: nextMessageId(), role: 'assistant', content: event.message });
+        }
       }
-
-      if (event.type === 'approval') {
-        return {
-          id,
-          role: 'assistant',
-          approvalRequest: {
-            ...event.approval,
-            status: 'pending',
-          },
-        };
-      }
-
-      return {
-        id,
-        role: 'assistant',
-        content: event.message,
-      };
+      return next;
     });
-
-    setMessages((prev) => [...prev, ...newMessages]);
   }
 
   async function sendChatMessage(userText: string) {
@@ -598,6 +644,9 @@ export default function ChatView() {
       ) : (
         <div className="flex-1 overflow-y-auto px-4 py-6 scroll-smooth space-y-6">
           {messages.map((msg) => {
+            if (msg.todos) {
+              return <div key={msg.id} className="flex justify-start"><TodoListBlock msg={msg} /></div>;
+            }
             if (msg.toolExecution) {
               return <div key={msg.id} className="flex justify-start"><ToolExecutionBlock msg={msg} /></div>;
             }
