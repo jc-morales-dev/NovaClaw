@@ -276,11 +276,20 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     session: AgentSession,
     messages: AgentMessage[],
     events: AgentRuntimeEvent[],
+    signal?: AbortSignal,
   ): Promise<RuntimeResult> {
     const cfg = options.getConfig();
     const system = await buildSystemPrompt();
 
     for (let i = 0; i < maxIterations; i += 1) {
+      // El usuario tocó Detener: cortamos limpio (el historial es texto plano,
+      // así que el próximo turno se reconstruye sin restos colgantes).
+      if (signal?.aborted) {
+        session.history.push({ role: 'assistant', content: '⏹️ Respuesta detenida.' });
+        events.push({ type: 'message', message: '⏹️ Respuesta detenida.' });
+        return { events };
+      }
+
       let reply;
       try {
         reply = await callModel({
@@ -289,8 +298,14 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
           model: cfg.model,
           system,
           messages,
+          abortSignal: signal,
         });
       } catch (error: any) {
+        if (signal?.aborted) {
+          session.history.push({ role: 'assistant', content: '⏹️ Respuesta detenida.' });
+          events.push({ type: 'message', message: '⏹️ Respuesta detenida.' });
+          return { events };
+        }
         const msg = `No se pudo contactar al modelo: ${error?.message ?? 'error'}`;
         session.history.push({ role: 'assistant', content: msg });
         events.push({ type: 'message', message: msg });
@@ -316,8 +331,12 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
         events.push({ type: 'message', message: reply.text });
       }
 
-      const resumed = await runToolBatch(session, messages, reply.toolCalls, 0, events);
+      const resumed = await runToolBatch(session, messages, reply.toolCalls, 0, events, signal);
       if (resumed === 'paused') return { events }; // esperando aprobación
+      if (resumed === 'aborted') {
+        events.push({ type: 'message', message: '⏹️ Respuesta detenida.' });
+        return { events };
+      }
     }
 
     const fallback = 'El agente alcanzó el máximo de pasos. Probá con un pedido más específico.';
@@ -327,16 +346,18 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
   }
 
   /** Ejecuta un lote de tool calls desde `startIndex`. Devuelve 'paused' si una
-   *  requiere aprobación (guardando el estado de reanudación), o 'done'. */
+   *  requiere aprobación, 'aborted' si el usuario detuvo, o 'done'. */
   async function runToolBatch(
     session: AgentSession,
     messages: AgentMessage[],
     batch: Array<{ id: string; name: string; args: Record<string, any> }>,
     startIndex: number,
     events: AgentRuntimeEvent[],
-  ): Promise<'paused' | 'done'> {
+    signal?: AbortSignal,
+  ): Promise<'paused' | 'done' | 'aborted'> {
     let i = startIndex;
     while (i < batch.length) {
+      if (signal?.aborted) return 'aborted';
       const tc = batch[i];
 
       // Plan de tareas visible: no va al executor; emite un evento para la UI
@@ -465,19 +486,21 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     session: AgentSession,
     message: string,
     onEvent?: AgentEventSink,
+    signal?: AbortSignal,
   ): Promise<RuntimeResult> {
     session.history.push({ role: 'user', content: message });
     // Conversaciones largas: resumir el historial con el modelo antes de armar
     // el contexto, para que el turno nunca reviente la ventana y no se pierda el hilo.
     await compactWithSummary(session);
     const messages = buildBaseMessages(session);
-    return runLoop(session, messages, trackedEvents(onEvent));
+    return runLoop(session, messages, trackedEvents(onEvent), signal);
   }
 
   async function resolveApproval(
     session: AgentSession,
     approved: boolean,
     onEvent?: AgentEventSink,
+    signal?: AbortSignal,
   ): Promise<RuntimeResult> {
     const pending = session.pendingApproval;
     const resume = (session as any).native as NativeResume | undefined;
@@ -510,9 +533,13 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     }
 
     // Continuar con el resto del lote y luego seguir el loop del modelo.
-    const rest = await runToolBatch(session, messages, batch, nextIndex + 1, events);
+    const rest = await runToolBatch(session, messages, batch, nextIndex + 1, events, signal);
     if (rest === 'paused') return { events };
-    return runLoop(session, messages, events);
+    if (rest === 'aborted') {
+      events.push({ type: 'message', message: '⏹️ Respuesta detenida.' });
+      return { events };
+    }
+    return runLoop(session, messages, events, signal);
   }
 
   return { runUserTurn, resolveApproval };

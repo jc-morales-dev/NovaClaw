@@ -198,11 +198,17 @@ export async function callModelWithTools(input: {
   timeoutMs?: number;
   /** Tools a excluir (p.ej. el subagente no puede lanzar más subagentes). */
   excludeTools?: string[];
+  /** Señal de cancelación del usuario (botón Detener). Se combina con el timeout. */
+  abortSignal?: AbortSignal;
 }): Promise<ModelReply> {
   const provider = getProvider(input.providerId);
   if (!provider) throw new Error(`Proveedor desconocido: ${input.providerId}`);
   const headers = authHeaders(input.providerId, input.apiKey);
-  const signal = AbortSignal.timeout(input.timeoutMs ?? 180000);
+  const timeoutSignal = AbortSignal.timeout(input.timeoutMs ?? 180000);
+  // Cancela por timeout O por el botón Detener del usuario.
+  const signal = input.abortSignal
+    ? AbortSignal.any([timeoutSignal, input.abortSignal])
+    : timeoutSignal;
   const exclude = input.excludeTools ?? [];
 
   if (provider.apiFormat === 'anthropic') {

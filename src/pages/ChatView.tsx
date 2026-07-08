@@ -3,14 +3,17 @@ import { useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
   ArrowUp,
+  Check,
   ChevronDown,
   ChevronRight,
+  Copy,
   FileCode2,
   FolderTree,
   History,
   Paperclip,
   Plus,
   Sparkles,
+  Square,
   Terminal as TerminalIcon,
   Trash2,
   X,
@@ -193,6 +196,55 @@ function buildMessagesFromServerHistory(
   return restoredMessages.length > 0 ? restoredMessages : createWelcomeMessage(welcomeMessage);
 }
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Fallback para WebViews viejos sin Clipboard API.
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // sin clipboard disponible — no hacemos nada visible
+    }
+  };
+
+  return (
+    <div className="pl-7 mt-2">
+      <button
+        type="button"
+        onClick={copy}
+        aria-label="Copiar respuesta"
+        className="inline-flex items-center gap-1.5 text-[12px] text-zinc-500 hover:text-zinc-300 transition-colors py-1"
+      >
+        {copied ? (
+          <>
+            <Check size={13} strokeWidth={2.4} className="text-emerald-500" />
+            <span className="text-emerald-500">Copiado</span>
+          </>
+        ) : (
+          <>
+            <Copy size={13} strokeWidth={2.2} />
+            <span>Copiar</span>
+          </>
+        )}
+      </button>
+    </div>
+  );
+}
+
 function TodoListBlock({ msg }: { msg: Message }) {
   if (!msg.todos || msg.todos.length === 0) return null;
   const done = msg.todos.filter((t) => t.status === 'completed').length;
@@ -367,6 +419,7 @@ export default function ChatView() {
     return createWelcomeMessage(t.welcomeMessage);
   });
   const [isTyping, setIsTyping] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
   const [pendingApprovalMessageId, setPendingApprovalMessageId] = useState<number | null>(null);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [chatHistory, setChatHistory] = useState(() => {
@@ -457,10 +510,16 @@ export default function ChatView() {
     });
   }
 
-  async function sendChatMessage(userText: string) {
+  async function sendChatMessage(userText: string, signal: AbortSignal) {
     // Streaming: cada evento (mensaje, tool call, aprobación) aparece EN VIVO.
-    await platform.sendChatStream(userText, sessionId, (ev) => appendServerEvents([ev]));
+    await platform.sendChatStream(userText, sessionId, (ev) => appendServerEvents([ev]), signal);
   }
+
+  // Botón Detener: aborta el turno en curso (corta el stream y para el agente).
+  const stopGeneration = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+  };
 
   const submitText = async (rawText: string) => {
     const userText = rawText.trim();
@@ -469,7 +528,7 @@ export default function ChatView() {
     setMessages((prev) => [
       ...prev,
       {
-        id: Date.now(),
+        id: nextMessageId(),
         role: 'user',
         content: userText,
       },
@@ -477,24 +536,33 @@ export default function ChatView() {
     setInput('');
     setIsTyping(true);
 
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
-      await sendChatMessage(userText);
+      await sendChatMessage(userText, controller.signal);
     } catch (error: any) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now() + 1,
-          role: 'assistant',
-          content: `Error: ${error.message}`,
-        },
-      ]);
+      if (error?.name !== 'AbortError') {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: nextMessageId(),
+            role: 'assistant',
+            content: `Error: ${error.message}`,
+          },
+        ]);
+      }
     } finally {
+      abortRef.current = null;
       setIsTyping(false);
     }
   };
 
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
+    if (isTyping) {
+      stopGeneration();
+      return;
+    }
     await submitText(input);
   };
 
@@ -686,6 +754,7 @@ export default function ChatView() {
                     {msg.content || ''}
                   </ReactMarkdown>
                 </div>
+                {msg.content && msg.content.trim() && <CopyButton text={msg.content} />}
               </div>
             );
           })}
@@ -740,13 +809,25 @@ export default function ChatView() {
             className="flex-1 bg-transparent text-zinc-100 placeholder-zinc-500 px-1 py-2.5 focus:outline-none text-[15px] resize-none min-h-[42px] max-h-[120px] scrollbar-hide"
             rows={1}
           />
-          <button
-            type="submit"
-            disabled={!input.trim() || isTyping}
-            className="w-9 h-9 flex items-center justify-center rounded-full shrink-0 self-end mb-0.5 transition-all disabled:bg-zinc-800 disabled:text-zinc-600 enabled:bg-gradient-to-br enabled:from-[#FF7A1A] enabled:to-amber-500 enabled:text-white enabled:hover:brightness-110 enabled:active:scale-95"
-          >
-            <ArrowUp size={19} strokeWidth={2.4} />
-          </button>
+          {isTyping ? (
+            <button
+              type="button"
+              onClick={stopGeneration}
+              aria-label="Detener"
+              className="w-9 h-9 flex items-center justify-center rounded-full shrink-0 self-end mb-0.5 transition-all bg-zinc-700 text-white hover:bg-zinc-600 active:scale-95"
+            >
+              <Square size={15} strokeWidth={2.6} fill="currentColor" />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={!input.trim()}
+              aria-label="Enviar"
+              className="w-9 h-9 flex items-center justify-center rounded-full shrink-0 self-end mb-0.5 transition-all disabled:bg-zinc-800 disabled:text-zinc-600 enabled:bg-gradient-to-br enabled:from-[#FF7A1A] enabled:to-amber-500 enabled:text-white enabled:hover:brightness-110 enabled:active:scale-95"
+            >
+              <ArrowUp size={19} strokeWidth={2.4} />
+            </button>
+          )}
         </form>
         <p className="text-center text-[11px] text-zinc-600 mt-2.5">NovaClaw puede cometer errores. Verificá lo importante.</p>
       </div>

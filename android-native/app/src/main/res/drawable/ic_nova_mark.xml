@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="60dp"
+    android:height="60dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Signo NovaClaw: destello nova de 4 puntas -->
+    <path
+        android:fillColor="#FFF6EC"
+        android:pathData="M54,20 Q62,46 88,54 Q62,62 54,88 Q46,62 20,54 Q46,46 54,20 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,54m-7,0a7,7 0,1 1,14 0a7,7 0,1 1,-14 0" />
+    <path
+        android:fillColor="#FFE9CF"
+        android:pathData="M82,26 Q84,34 92,36 Q84,38 82,46 Q80,38 72,36 Q80,34 82,26 Z" />
+</vector>

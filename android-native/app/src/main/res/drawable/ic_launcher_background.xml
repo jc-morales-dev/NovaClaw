@@ -17,13 +17,4 @@
                 android:endColor="#C24E06" />
         </aapt:attr>
     </path>
-    <path
-        android:fillColor="#FFF6EC"
-        android:pathData="M54,28 Q61,47 80,54 Q61,61 54,80 Q47,61 28,54 Q47,47 54,28 Z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,54m-6,0a6,6 0,1 1,12 0a6,6 0,1 1,-12 0" />
-    <path
-        android:fillColor="#FFF6EC"
-        android:pathData="M76,32 Q78,39 85,41 Q78,43 76,50 Q74,43 67,41 Q74,39 76,32 Z" />
 </vector>

@@ -340,6 +340,7 @@ export function createAgentRuntime(options: RuntimeOptions) {
     session: AgentSession,
     message: string,
     onEvent?: AgentEventSink,
+    _signal?: AbortSignal,
   ): Promise<RuntimeResult> {
     session.history.push({ role: 'user', content: message });
     return continueLoop(session, trackedEvents(onEvent));
@@ -349,6 +350,7 @@ export function createAgentRuntime(options: RuntimeOptions) {
     session: AgentSession,
     approved: boolean,
     onEvent?: AgentEventSink,
+    _signal?: AbortSignal,
   ): Promise<RuntimeResult> {
     const events = trackedEvents(onEvent);
 

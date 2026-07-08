@@ -4,23 +4,16 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Garra NovaClaw escalada a la zona segura del ícono adaptativo -->
-    <group
-        android:scaleX="0.62"
-        android:scaleY="0.62"
-        android:pivotX="54"
-        android:pivotY="54">
-        <path
-            android:fillColor="#FF7A1A"
-            android:pathData="M54,22c-16,0 -29,12 -29,28c0,10 5,18 13,23l0,-14c-2,-3 -3,-6 -3,-9c0,-10 8,-18 19,-18c11,0 19,8 19,18c0,3 -1,6 -3,9l0,14c8,-5 13,-13 13,-23c0,-16 -13,-28 -29,-28z" />
-        <path
-            android:fillColor="#FF7A1A"
-            android:pathData="M42,58l0,20c0,4 3,8 8,8l8,0c5,0 8,-4 8,-8l0,-20l-7,0l0,18l-10,0l0,-18z" />
-        <path
-            android:fillColor="#11151F"
-            android:pathData="M48,42m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0" />
-        <path
-            android:fillColor="#11151F"
-            android:pathData="M60,42m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0" />
-    </group>
+    <!-- Signo NovaClaw: destello nova de 4 puntas (coherente con el avatar del chat) -->
+    <path
+        android:fillColor="#FFF6EC"
+        android:pathData="M54,28 Q61,47 80,54 Q61,61 54,80 Q47,61 28,54 Q47,47 54,28 Z" />
+    <!-- Nucleo brillante -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,54m-6,0a6,6 0,1 1,12 0a6,6 0,1 1,-12 0" />
+    <!-- Destello secundario chico, arriba a la derecha -->
+    <path
+        android:fillColor="#FFF6EC"
+        android:pathData="M76,32 Q78,39 85,41 Q78,43 76,50 Q74,43 67,41 Q74,39 76,32 Z" />
 </vector>

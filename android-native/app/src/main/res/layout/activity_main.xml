@@ -22,12 +22,24 @@
             android:paddingTop="32dp"
             android:paddingBottom="32dp">
 
-            <View
+            <FrameLayout
                 android:id="@+id/orb"
-                android:layout_width="104dp"
-                android:layout_height="104dp"
-                android:background="@drawable/bg_orb"
-                android:layout_marginBottom="28dp" />
+                android:layout_width="112dp"
+                android:layout_height="112dp"
+                android:layout_marginBottom="28dp">
+
+                <View
+                    android:layout_width="112dp"
+                    android:layout_height="112dp"
+                    android:background="@drawable/bg_orb" />
+
+                <ImageView
+                    android:layout_width="60dp"
+                    android:layout_height="60dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_nova_mark"
+                    android:contentDescription="@string/app_name" />
+            </FrameLayout>
 
             <TextView
                 android:layout_width="wrap_content"

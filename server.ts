@@ -903,10 +903,13 @@ async function startServer() {
     if (runtimeState.agent.status !== 'running') {
       startAgentRuntime();
     }
+    // Botón Detener: si el cliente cierra la conexión, abortamos el turno.
+    const controller = new AbortController();
+    req.on('close', () => controller.abort());
     const send = openSse(res);
     try {
       const session = getOrCreateSession(sessionId);
-      const result = await pickRuntime().runUserTurn(session, message, (ev) => send('agent', ev));
+      const result = await pickRuntime().runUserTurn(session, message, (ev) => send('agent', ev), controller.signal);
       runtimeState.terminal.cwd = session.cwd;
       saveSessionsToDisk();
       send('done', { count: result.events.length });
@@ -920,10 +923,12 @@ async function startServer() {
 
   app.post('/api/chat/approval/stream', async (req, res) => {
     const { sessionId = AGENT_SESSION_ID, approved } = req.body;
+    const controller = new AbortController();
+    req.on('close', () => controller.abort());
     const send = openSse(res);
     try {
       const session = getOrCreateSession(sessionId);
-      const result = await pickRuntime().resolveApproval(session, Boolean(approved), (ev) => send('agent', ev));
+      const result = await pickRuntime().resolveApproval(session, Boolean(approved), (ev) => send('agent', ev), controller.signal);
       runtimeState.terminal.cwd = session.cwd;
       saveSessionsToDisk();
       send('done', { count: result.events.length });
