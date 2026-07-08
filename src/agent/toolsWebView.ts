@@ -83,6 +83,32 @@ async function shellReadFile(path: string): Promise<string> {
  return output;
 }
 
+/** Formatea contenido con números de línea (cat -n) + offset/limit 1-based. */
+function formatFileWithLineNumbers(
+ content: string,
+ args: Record<string, any>,
+ maxLines: number,
+ maxBytes: number,
+): string {
+ const bounded = content.length > maxBytes ? content.slice(0, maxBytes) : content;
+ const lines = bounded.split('\n');
+ const totalLines = lines.length;
+ const offset = Math.max(1, Math.floor(Number(args.offset)) || 1);
+ const hasLimit = args.limit !== undefined && args.limit !== null;
+ const limit = hasLimit ? Math.max(1, Math.floor(Number(args.limit))) : maxLines;
+ if (offset > totalLines) return `[file has ${totalLines} lines; offset ${offset} is past the end]`;
+ const startIdx = offset - 1;
+ const endIdx = Math.min(startIdx + limit, totalLines);
+ const width = String(endIdx).length;
+ const numbered = lines.slice(startIdx, endIdx)
+ .map((line, i) => `${String(offset + i).padStart(width, ' ')}\t${line}`)
+ .join('\n');
+ const notes: string[] = [];
+ if (endIdx < totalLines) notes.push(`[... ${totalLines - endIdx} more lines below; use offset=${endIdx + 1} to continue ...]`);
+ if (content.length > maxBytes) notes.push(`[file truncated at ${maxBytes} bytes]`);
+ return notes.length ? `${numbered}\n${notes.join('\n')}` : numbered;
+}
+
 /** Resuelve rutas relativas/~ sin Node.js path. */
 function resolvePath(inputPath: string, cwd: string): string {
  if (!inputPath) return cwd;
@@ -145,12 +171,11 @@ export function createWebViewToolExecutor() {
  if (call.tool === 'file.read') {
  const targetPath = resolvePath(String(call.arguments.path ?? ''), cwd);
  const MAX_CHARS = 256 * 1024;
+ const MAX_LINES = 2000;
  try {
  const raw = await shellReadFile(targetPath);
- const content = raw.length > MAX_CHARS
- ? `${raw.slice(0, MAX_CHARS)}\n\n[... truncado — ${raw.length} chars ...]`
- : raw;
- return { name: 'file.read', command: targetPath, status: 'success', output: content, cwd };
+ const output = formatFileWithLineNumbers(raw, call.arguments, MAX_LINES, MAX_CHARS);
+ return { name: 'file.read', command: targetPath, status: 'success', output, cwd };
  } catch (err: any) {
  return { name: 'file.read', command: targetPath, status: 'error', output: err.message, cwd };
  }
@@ -305,6 +330,28 @@ export function createWebViewToolExecutor() {
  };
  } catch (err: any) {
  return { name: 'file.search', command: `${targetPath} :: ${rawQuery}`, status: 'error', output: err.message, cwd };
+ }
+ }
+
+ // ── image.view ─────────────────────────────────────────────────────────────
+ if (call.tool === 'image.view') {
+ const targetPath = resolvePath(String(call.arguments.path ?? ''), cwd);
+ const ext = targetPath.slice(targetPath.lastIndexOf('.')).toLowerCase();
+ const mediaType = ({ '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif' } as Record<string, string>)[ext];
+ if (!mediaType) {
+ return { name: 'image.view', command: targetPath, status: 'error', output: `Unsupported image type "${ext}". Use jpg, png, webp or gif.`, cwd };
+ }
+ try {
+ const safePath = sanitizeShellPath(targetPath);
+ // base64 del archivo (una sola línea) vía el shell del prefix.
+ const { output, exitCode } = await shellRun(`base64 -w0 '${safePath}' 2>/dev/null || base64 '${safePath}'`, cwd, 30_000);
+ const data = output.replace(/\s+/g, '');
+ if (exitCode !== 0 || !data) {
+ return { name: 'image.view', command: targetPath, status: 'error', output: 'No se pudo leer la imagen.', cwd };
+ }
+ return { name: 'image.view', command: targetPath, status: 'success', output: `Loaded image ${targetPath}. See the attached image.`, image: { mediaType, data }, cwd };
+ } catch (err: any) {
+ return { name: 'image.view', command: targetPath, status: 'error', output: err.message, cwd };
  }
  }
 

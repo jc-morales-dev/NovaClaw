@@ -28,4 +28,7 @@ export type ToolExecutionResult = {
   status: 'success' | 'error';
   output: string;
   cwd?: string;
+  /** Imagen producida por la tool (p.ej. image.view / phone.photo) para que el
+   *  modelo la VEA en el próximo turno. base64 sin el prefijo data:. */
+  image?: { mediaType: string; data: string };
 };

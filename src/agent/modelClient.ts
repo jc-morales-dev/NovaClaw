@@ -20,6 +20,12 @@ const ANTHROPIC_THINKING_BUDGET = 4096;
 const ANTHROPIC_MAX_TOKENS = 16384;
 const OPENAI_MAX_TOKENS = 8192;
 
+/** Imagen adjunta a un mensaje (para modelos multimodales: cámara, screenshots). */
+export interface AgentImage {
+  mediaType: string; // p.ej. 'image/jpeg', 'image/png'
+  data: string;      // base64 (sin el prefijo data:)
+}
+
 export interface AgentMessage {
   role: 'user' | 'assistant' | 'tool';
   text?: string;
@@ -27,6 +33,8 @@ export interface AgentMessage {
   toolCallId?: string;
   toolName?: string;
   result?: string;
+  /** Imágenes adjuntas al mensaje (visión). Válido en 'user'. */
+  images?: AgentImage[];
   /** Bloques de contenido crudos de Anthropic (incluye thinking). Con extended
    *  thinking + tool use, la API exige devolverlos INTACTOS en el turno siguiente. */
   rawContent?: any[];
@@ -117,7 +125,17 @@ function toOpenAIMessages(system: string, messages: AgentMessage[]): any[] {
   const out: any[] = [{ role: 'system', content: system }];
   for (const m of messages) {
     if (m.role === 'user') {
-      out.push({ role: 'user', content: m.text ?? '' });
+      if (m.images && m.images.length > 0) {
+        // Contenido multimodal: texto + imágenes (formato OpenAI image_url).
+        const parts: any[] = [];
+        if (m.text) parts.push({ type: 'text', text: m.text });
+        for (const img of m.images) {
+          parts.push({ type: 'image_url', image_url: { url: `data:${img.mediaType};base64,${img.data}` } });
+        }
+        out.push({ role: 'user', content: parts });
+      } else {
+        out.push({ role: 'user', content: m.text ?? '' });
+      }
     } else if (m.role === 'assistant') {
       const msg: any = { role: 'assistant', content: m.text ?? '' };
       if (m.toolCalls && m.toolCalls.length > 0) {
@@ -140,7 +158,13 @@ function toAnthropicMessages(messages: AgentMessage[]): any[] {
   const out: any[] = [];
   for (const m of messages) {
     if (m.role === 'user') {
-      out.push({ role: 'user', content: [{ type: 'text', text: m.text ?? '' }] });
+      const content: any[] = [];
+      if (m.text) content.push({ type: 'text', text: m.text });
+      for (const img of m.images ?? []) {
+        content.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType, data: img.data } });
+      }
+      if (content.length === 0) content.push({ type: 'text', text: '' });
+      out.push({ role: 'user', content });
     } else if (m.role === 'assistant') {
       // Con thinking activado hay que reenviar los bloques crudos tal cual
       // (incluidos los bloques thinking firmados) o la API rechaza el turno.

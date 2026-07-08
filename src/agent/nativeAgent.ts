@@ -34,7 +34,8 @@ You have native tools. Call them to act — never describe what you would do, ju
 # Capabilities
 
 - Shell (terminal_run): any command in the embedded Linux (397+ binaries). Install tools on request: pkg install X, npm install -g X, pip install X, git clone. With the Files connector on, the whole phone storage is at /sdcard (Download, DCIM photos, Documents…).
-- Files: file_read, file_edit (surgical), file_write, file_grep (content search), file_list, file_search (name search), workspace_mkdir.
+- Files: file_read (output has line numbers like \`cat -n\`; use offset+limit for big files), file_edit (surgical — do NOT include the line-number prefix in old_string), file_write, file_grep (content search), file_list, file_search (name search), workspace_mkdir.
+- Vision (image_view): actually SEE an image file (a photo, a screenshot, a picture under /sdcard/DCIM or /sdcard/Pictures) — describe it, read text in it, analyze it. phone_photo takes a picture AND shows it to you automatically.
 - Web (web_fetch): read documentation, APIs or any http(s) page as text. Use it when you need current information or library docs.
 - Phone: phone_location (returns a human address — answer in plain language, e.g. "Estás en <street>, <city>, <country>", never raw coordinates), phone_contacts, phone_photo.
 - Sub-agents (subagent_run): a fresh agent with clean context that reports back.
@@ -62,6 +63,13 @@ Rules:
 
 type RuntimeResult = { events: AgentRuntimeEvent[] };
 
+// Tools de solo-lectura (nombres nativos, guion_bajo): no mutan estado ni cwd,
+// así que varias seguidas en un turno se pueden ejecutar EN PARALELO.
+const READ_ONLY_TOOLS = new Set([
+  'file_read', 'file_grep', 'file_list', 'file_search',
+  'web_fetch', 'phone_location', 'phone_contacts', 'image_view',
+]);
+
 type ConfigSnapshot = { providerId: string; apiKey: string; model: string };
 
 interface NativeRuntimeOptions {
@@ -72,6 +80,8 @@ interface NativeRuntimeOptions {
   maxIterations?: number;
   /** Memoria persistente del proyecto (NOVACLAW.md) — se inyecta al system prompt. */
   getProjectContext?: () => Promise<string> | string;
+  /** Inyección del cliente del modelo (tests / mocks). Por defecto callModelWithTools. */
+  callModel?: typeof callModelWithTools;
 }
 
 // Estado de reanudación tras una aprobación (se guarda en la sesión, serializable).
@@ -110,6 +120,7 @@ function buildBaseMessages(session: AgentSession): AgentMessage[] {
 
 export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
   const maxIterations = options.maxIterations ?? 32;
+  const callModel = options.callModel ?? callModelWithTools;
 
   function dotName(nativeName: string): string {
     return TOOL_NAME_TO_DOT[nativeName] ?? nativeName;
@@ -138,7 +149,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     for (let i = 0; i < SUB_MAX_ITERATIONS; i += 1) {
       let reply;
       try {
-        reply = await callModelWithTools({
+        reply = await callModel({
           providerId: cfg.providerId,
           apiKey: cfg.apiKey,
           model: cfg.model,
@@ -163,6 +174,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
           workspaceRoot: options.workspaceRoot,
         });
         let output: string;
+        let image: { mediaType: string; data: string } | undefined;
         if (decision.requiresApproval) {
           output = 'BLOCKED: this action needs user approval and sub-agents cannot request it. Report it back so the main agent can do it.';
         } else {
@@ -172,11 +184,15 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
               workspaceRoot: options.workspaceRoot,
             });
             output = result.output;
+            image = result.image;
           } catch (error: any) {
             output = error?.message ?? 'Tool failed.';
           }
         }
         messages.push({ role: 'tool', toolCallId: tc.id, toolName: tc.name, result: output });
+        if (image) {
+          messages.push({ role: 'user', text: `[image from ${call.tool}]`, images: [image] });
+        }
       }
     }
     return '[El sub-agente alcanzó su límite de pasos sin terminar el reporte.]';
@@ -193,7 +209,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     for (let i = 0; i < maxIterations; i += 1) {
       let reply;
       try {
-        reply = await callModelWithTools({
+        reply = await callModel({
           providerId: cfg.providerId,
           apiKey: cfg.apiKey,
           model: cfg.model,
@@ -245,7 +261,8 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     startIndex: number,
     events: AgentRuntimeEvent[],
   ): Promise<'paused' | 'done'> {
-    for (let i = startIndex; i < batch.length; i += 1) {
+    let i = startIndex;
+    while (i < batch.length) {
       const tc = batch[i];
 
       // El sub-agente se ejecuta acá adentro (necesita el modelo, no el executor).
@@ -264,7 +281,26 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
         messages.push({ role: 'tool', toolCallId: tc.id, toolName: tc.name, result: report });
         session.history.push({ role: 'system', content: toolResultToHistory(result) });
         events.push({ type: 'toolExecution', toolExecution: result });
+        i += 1;
         continue;
+      }
+
+      // Corrida de tools de solo-lectura consecutivas → ejecutar EN PARALELO
+      // (registramos los resultados en orden para mantener el hilo coherente).
+      if (READ_ONLY_TOOLS.has(tc.name)) {
+        let j = i;
+        while (j < batch.length && READ_ONLY_TOOLS.has(batch[j].name)) j += 1;
+        if (j - i > 1) {
+          const group = batch.slice(i, j);
+          const results = await Promise.all(
+            group.map((g) => executeOnly(session, { tool: dotName(g.name), arguments: g.args })),
+          );
+          for (let k = 0; k < group.length; k += 1) {
+            recordResult(session, messages, group[k], results[k], events);
+          }
+          i = j;
+          continue;
+        }
       }
 
       const call: ToolCallLike = { tool: dotName(tc.name), arguments: tc.args };
@@ -282,8 +318,42 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
 
       const result = await executeAndRecord(session, messages, tc, call, events);
       if (result.cwd) session.cwd = result.cwd;
+      i += 1;
     }
     return 'done';
+  }
+
+  /** Solo ejecuta la tool (sin registrar) — usado por la ejecución en paralelo. */
+  async function executeOnly(session: AgentSession, call: ToolCallLike): Promise<ToolExecutionResult> {
+    try {
+      return await options.executeToolCall(call, { cwd: session.cwd, workspaceRoot: session.workspaceRoot });
+    } catch (error: any) {
+      return {
+        name: call.tool,
+        command: JSON.stringify(call.arguments),
+        status: 'error',
+        output: error?.message ?? 'La herramienta falló.',
+        cwd: session.cwd,
+      };
+    }
+  }
+
+  /** Registra un resultado ya ejecutado: mensajes del modelo, imagen, historial, evento. */
+  function recordResult(
+    session: AgentSession,
+    messages: AgentMessage[],
+    tc: { id: string; name: string },
+    result: ToolExecutionResult,
+    events: AgentRuntimeEvent[],
+  ): void {
+    messages.push({ role: 'tool', toolCallId: tc.id, toolName: tc.name, result: result.output });
+    // Visión: si la tool produjo una imagen (image.view / phone.photo), la
+    // adjuntamos como mensaje de usuario para que el modelo la VEA de verdad.
+    if (result.image) {
+      messages.push({ role: 'user', text: `[image from ${result.name}]`, images: [result.image] });
+    }
+    session.history.push({ role: 'system', content: toolResultToHistory(result) });
+    events.push({ type: 'toolExecution', toolExecution: result });
   }
 
   async function executeAndRecord(
@@ -293,21 +363,8 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     call: ToolCallLike,
     events: AgentRuntimeEvent[],
   ): Promise<ToolExecutionResult> {
-    let result: ToolExecutionResult;
-    try {
-      result = await options.executeToolCall(call, { cwd: session.cwd, workspaceRoot: session.workspaceRoot });
-    } catch (error: any) {
-      result = {
-        name: call.tool,
-        command: JSON.stringify(call.arguments),
-        status: 'error',
-        output: error?.message ?? 'La herramienta falló.',
-        cwd: session.cwd,
-      };
-    }
-    messages.push({ role: 'tool', toolCallId: tc.id, toolName: tc.name, result: result.output });
-    session.history.push({ role: 'system', content: toolResultToHistory(result) });
-    events.push({ type: 'toolExecution', toolExecution: result });
+    const result = await executeOnly(session, call);
+    recordResult(session, messages, tc, result, events);
     return result;
   }
 

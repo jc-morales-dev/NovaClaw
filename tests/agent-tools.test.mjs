@@ -115,5 +115,49 @@ async function writeFixture(rel, content) {
   assert.match(res.output, /http\(s\)/);
 }
 
+// ── file.read: números de línea estilo cat -n ─────────────────────────────────
+{
+  const file = await writeFixture('lineas.txt', 'alfa\nbeta\ngamma\n');
+  const res = await executor({ tool: 'file.read', arguments: { path: file } }, ctx);
+  assert.equal(res.status, 'success', res.output);
+  assert.match(res.output, /1\talfa/);
+  assert.match(res.output, /2\tbeta/);
+  assert.match(res.output, /3\tgamma/);
+}
+
+// ── file.read: offset + limit (ventana) ───────────────────────────────────────
+{
+  const lines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n');
+  const file = await writeFixture('grande.txt', lines);
+  const res = await executor({ tool: 'file.read', arguments: { path: file, offset: 5, limit: 3 } }, ctx);
+  assert.equal(res.status, 'success', res.output);
+  assert.match(res.output, /5\tline 5/);
+  assert.match(res.output, /7\tline 7/);
+  assert.doesNotMatch(res.output, /\b4\tline 4/);
+  assert.doesNotMatch(res.output, /8\tline 8/);
+  assert.match(res.output, /more lines below/);
+}
+
+// ── image.view: rechaza tipos no-imagen ───────────────────────────────────────
+{
+  const file = await writeFixture('noimg.txt', 'no soy imagen');
+  const res = await executor({ tool: 'image.view', arguments: { path: file } }, ctx);
+  assert.equal(res.status, 'error');
+  assert.match(res.output, /Unsupported image type/);
+}
+
+// ── image.view: PNG real → devuelve base64 para visión ────────────────────────
+{
+  // PNG 1x1 transparente mínimo, en base64.
+  const pngB64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  const imgPath = path.join(workspaceRoot, 'pixel.png');
+  await fs.writeFile(imgPath, Buffer.from(pngB64, 'base64'));
+  const res = await executor({ tool: 'image.view', arguments: { path: imgPath } }, ctx);
+  assert.equal(res.status, 'success', res.output);
+  assert.ok(res.image, 'debe adjuntar la imagen');
+  assert.equal(res.image.mediaType, 'image/png');
+  assert.equal(res.image.data, pngB64);
+}
+
 await fs.rm(workspaceRoot, { recursive: true, force: true });
 console.log('agent-tools.test.mjs passed');

@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "test:agent": "node --import tsx tests/agent-model-action.test.mjs && node --import tsx tests/agent-safety.test.mjs && node --import tsx tests/agent-runtime.test.mjs && node --import tsx tests/agent-tools.test.mjs",
+    "test:agent": "node --import tsx tests/agent-model-action.test.mjs && node --import tsx tests/agent-safety.test.mjs && node --import tsx tests/agent-runtime.test.mjs && node --import tsx tests/agent-tools.test.mjs && node --import tsx tests/agent-parallel.test.mjs",
     "test:mobile": "node --import tsx tests/platform-adapter.test.mjs && node --import tsx tests/bootstrap-state.test.mjs && node --import tsx tests/browser-runtime-boundary.test.mjs",
     "build:bootstrap": "node scripts/build-minimal-bootstrap.mjs",
     "android:sync": "npm run build && npx cap sync android",

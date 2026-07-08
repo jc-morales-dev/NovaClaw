@@ -17,6 +17,73 @@ function resolveTargetPath(inputPath: string, cwd: string): string {
   return path.isAbsolute(inputPath) ? inputPath : path.resolve(cwd, inputPath);
 }
 
+/**
+ * Formatea el contenido de un archivo con números de línea (estilo `cat -n`),
+ * respetando offset/limit (1-based) para leer ventanas de archivos grandes.
+ * Así el modelo puede referenciar líneas exactas al editar.
+ */
+// Extensiones de imagen soportadas por los modelos de vision y su media type.
+const IMAGE_MEDIA_TYPES: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+};
+
+/** Lee un archivo de imagen y lo devuelve como base64 + media type para vision. */
+async function loadImageAsBase64(imagePath: string): Promise<{ mediaType: string; data: string }> {
+  const ext = path.extname(imagePath).toLowerCase();
+  const mediaType = IMAGE_MEDIA_TYPES[ext];
+  if (!mediaType) {
+    throw new Error(`Unsupported image type "${ext}". Use jpg, png, webp or gif.`);
+  }
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB
+  const stat = await fs.stat(imagePath);
+  if (!stat.isFile()) throw new Error(`Not a file: ${imagePath}`);
+  if (stat.size > MAX_IMAGE_BYTES) {
+    throw new Error(`Image too large (${Math.round(stat.size / 1024)} KB, max 5 MB).`);
+  }
+  const buf = await fs.readFile(imagePath);
+  return { mediaType, data: buf.toString('base64') };
+}
+
+function formatWithLineNumbers(
+  content: string,
+  args: Record<string, any>,
+  maxLines: number,
+  maxBytes: number,
+): string {
+  const bounded = content.length > maxBytes ? content.slice(0, maxBytes) : content;
+  const lines = bounded.split('\n');
+  const totalLines = lines.length;
+
+  const offset = Math.max(1, Math.floor(Number(args.offset)) || 1);
+  const hasLimit = args.limit !== undefined && args.limit !== null;
+  const limit = hasLimit ? Math.max(1, Math.floor(Number(args.limit))) : maxLines;
+
+  const startIdx = offset - 1;
+  const endIdx = Math.min(startIdx + limit, totalLines);
+  const slice = lines.slice(startIdx, endIdx);
+
+  const width = String(endIdx).length;
+  const numbered = slice
+    .map((line, i) => `${String(offset + i).padStart(width, ' ')}\t${line}`)
+    .join('\n');
+
+  const notes: string[] = [];
+  if (offset > totalLines) {
+    return `[file has ${totalLines} lines; offset ${offset} is past the end]`;
+  }
+  if (endIdx < totalLines) {
+    notes.push(`[... ${totalLines - endIdx} more lines below; use offset=${endIdx + 1} to continue ...]`);
+  }
+  if (content.length > maxBytes) {
+    notes.push(`[file truncated at ${maxBytes} bytes]`);
+  }
+  return notes.length ? `${numbered}\n${notes.join('\n')}` : numbered;
+}
+
 // Puente con el servidor de capacidades nativas (Kotlin) — cámara/GPS/contactos.
 const NATIVE_TOOLS_BASE = process.env.NOVACLAW_NATIVE_URL || 'http://127.0.0.1:8099';
 
@@ -125,6 +192,7 @@ export function createLocalToolExecutor() {
     if (call.tool === 'file.read') {
       const targetPath = resolveTargetPath(String(call.arguments.path ?? ''), context.cwd);
       const MAX_READ_BYTES = 256 * 1024; // 256 KB hard cap to protect the agent context window.
+      const MAX_LINES = 2000; // límite de líneas por lectura sin rango explícito
       const stat = await fs.stat(targetPath);
       if (!stat.isFile()) {
         return {
@@ -137,16 +205,13 @@ export function createLocalToolExecutor() {
       }
 
       const fullContent = await fs.readFile(targetPath, 'utf8');
-      const truncated = fullContent.length > MAX_READ_BYTES;
-      const content = truncated
-        ? `${fullContent.slice(0, MAX_READ_BYTES)}\n\n[... truncated, file is ${fullContent.length} bytes, showing first ${MAX_READ_BYTES} bytes ...]`
-        : fullContent;
+      const output = formatWithLineNumbers(fullContent, call.arguments, MAX_LINES, MAX_READ_BYTES);
 
       return {
         name: 'file.read',
         command: targetPath,
         status: 'success',
-        output: content,
+        output,
         cwd: context.cwd,
       };
     }
@@ -495,11 +560,21 @@ export function createLocalToolExecutor() {
       const facing = String(call.arguments.facing ?? 'back');
       try {
         const data = await callNativeTool(`/photo?facing=${encodeURIComponent(facing)}`);
+        // Adjuntamos la foto para que el modelo la VEA de una (no solo el path).
+        let image: { mediaType: string; data: string } | undefined;
+        try {
+          image = await loadImageAsBase64(String(data.path));
+        } catch {
+          image = undefined; // si no se puede leer, al menos damos el path
+        }
         return {
           name: 'phone.photo',
           command: `photo ${facing}`,
           status: 'success',
-          output: `Photo saved: ${data.path} (${data.bytes} bytes, ${data.facing} camera). You can read/analyze it with file tools.`,
+          output: image
+            ? `Photo taken (${data.facing} camera), saved to ${data.path}. See the attached image.`
+            : `Photo saved: ${data.path} (${data.bytes} bytes, ${data.facing} camera). Use image_view to look at it.`,
+          image,
           cwd: context.cwd,
         };
       } catch (error: any) {
@@ -508,6 +583,29 @@ export function createLocalToolExecutor() {
           command: `photo ${facing}`,
           status: 'error',
           output: error?.message ?? 'Could not take a photo.',
+          cwd: context.cwd,
+        };
+      }
+    }
+
+    if (call.tool === 'image.view') {
+      const targetPath = resolveTargetPath(String(call.arguments.path ?? ''), context.cwd);
+      try {
+        const image = await loadImageAsBase64(targetPath);
+        return {
+          name: 'image.view',
+          command: targetPath,
+          status: 'success',
+          output: `Loaded image ${targetPath}. See the attached image.`,
+          image,
+          cwd: context.cwd,
+        };
+      } catch (error: any) {
+        return {
+          name: 'image.view',
+          command: targetPath,
+          status: 'error',
+          output: error?.message ?? 'Could not load the image.',
           cwd: context.cwd,
         };
       }

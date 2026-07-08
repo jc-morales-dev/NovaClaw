@@ -27,10 +27,15 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   },
   {
     name: 'file_read',
-    description: "Read a text file's contents.",
+    description:
+      "Read a text file's contents. Output is prefixed with line numbers (like `cat -n`) so you can reference exact lines when editing. For large files, use offset+limit to read a window of lines instead of the whole file.",
     parameters: {
       type: 'object',
-      properties: { path: { type: 'string', description: 'Path to the file.' } },
+      properties: {
+        path: { type: 'string', description: 'Path to the file.' },
+        offset: { type: 'number', description: 'First line to read (1-based). Omit to start at the top.' },
+        limit: { type: 'number', description: 'How many lines to read from offset. Omit to read to the end (capped).' },
+      },
       required: ['path'],
     },
   },
@@ -50,7 +55,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'file_edit',
     description:
-      'Surgically edit an existing file: replace an EXACT text snippet with new text, without rewriting the whole file. old_string must match the file content exactly (including whitespace/indentation) and must be unique in the file — include a few surrounding lines to disambiguate. Use replace_all=true to replace every occurrence (e.g. renaming).',
+      'Surgically edit an existing file: replace an EXACT text snippet with new text, without rewriting the whole file. old_string must match the file content exactly (including whitespace/indentation) and must be unique in the file — include a few surrounding lines to disambiguate. IMPORTANT: file_read prefixes each line with "<number>\\t" — do NOT include that line-number prefix in old_string, only the real file text. Use replace_all=true to replace every occurrence (e.g. renaming).',
     parameters: {
       type: 'object',
       properties: {
@@ -122,10 +127,20 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'phone_photo',
     description:
-      'Take a photo with the phone camera and save it as a file (then read/analyze it). Needs the Camera connector.',
+      'Take a photo with the phone camera and save it as a file, then VIEW it automatically — the image is attached so you can actually see and describe what is in front of the camera. Needs the Camera connector.',
     parameters: {
       type: 'object',
       properties: { facing: { type: 'string', enum: ['back', 'front'], description: 'Which camera.' } },
+    },
+  },
+  {
+    name: 'image_view',
+    description:
+      'Look at an image file (jpg, png, webp, gif) and attach it so you can actually SEE it — describe it, read text in it, analyze a screenshot or photo. Use for images under /sdcard/DCIM, /sdcard/Pictures, downloads, or a photo you just took.',
+    parameters: {
+      type: 'object',
+      properties: { path: { type: 'string', description: 'Path to the image file.' } },
+      required: ['path'],
     },
   },
   {
@@ -166,6 +181,7 @@ export const TOOL_NAME_TO_DOT: Record<string, string> = {
   phone_location: 'phone.location',
   phone_contacts: 'phone.contacts',
   phone_photo: 'phone.photo',
+  image_view: 'image.view',
   web_fetch: 'web.fetch',
   subagent_run: 'subagent.run',
 };
