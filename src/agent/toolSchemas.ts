@@ -36,7 +36,8 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   },
   {
     name: 'file_write',
-    description: 'Create or overwrite a file with the given content.',
+    description:
+      'Create a NEW file with the given content. For modifying an existing file prefer file_edit (surgical) — only use file_write to overwrite when a full rewrite is really needed.',
     parameters: {
       type: 'object',
       properties: {
@@ -44,6 +45,35 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
         content: { type: 'string', description: 'Full file content.' },
       },
       required: ['path', 'content'],
+    },
+  },
+  {
+    name: 'file_edit',
+    description:
+      'Surgically edit an existing file: replace an EXACT text snippet with new text, without rewriting the whole file. old_string must match the file content exactly (including whitespace/indentation) and must be unique in the file — include a few surrounding lines to disambiguate. Use replace_all=true to replace every occurrence (e.g. renaming).',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path to the file to edit.' },
+        old_string: { type: 'string', description: 'Exact text to find (must be unique unless replace_all).' },
+        new_string: { type: 'string', description: 'Replacement text.' },
+        replace_all: { type: 'boolean', description: 'Replace every occurrence (default false).' },
+      },
+      required: ['path', 'old_string', 'new_string'],
+    },
+  },
+  {
+    name: 'file_grep',
+    description:
+      'Search file CONTENTS with a regular expression, recursively. Returns matching lines as path:line: text. Use this to find where code/text lives before reading or editing. Skips node_modules, .git and binary files.',
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Regular expression to search for (JS syntax).' },
+        path: { type: 'string', description: 'Root directory or file to search (default: current dir).' },
+        max_results: { type: 'number', description: 'Max matching lines to return (default 60).' },
+      },
+      required: ['pattern'],
     },
   },
   {
@@ -98,6 +128,28 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
       properties: { facing: { type: 'string', enum: ['back', 'front'], description: 'Which camera.' } },
     },
   },
+  {
+    name: 'web_fetch',
+    description:
+      'Fetch a web page or API over HTTP GET and return its text content (HTML is stripped to readable text, output truncated). Use to read documentation, check an API, or research something online.',
+    parameters: {
+      type: 'object',
+      properties: { url: { type: 'string', description: 'The http(s) URL to fetch.' } },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'subagent_run',
+    description:
+      'Delegate a self-contained subtask to a fresh sub-agent with its own clean context (like a research assistant). It has the same tools (except spawning more sub-agents and approval-gated actions) and returns a final text report. Use it for big explorations (e.g. "map this repo", "find all usages of X") so the main conversation stays focused. The sub-agent knows NOTHING about this conversation: include every detail it needs in the task.',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: 'Complete, self-contained description of the subtask.' },
+      },
+      required: ['task'],
+    },
+  },
 ];
 
 /** El modelo usa nombres con guion bajo (terminal_run); el executor usa punto
@@ -106,25 +158,29 @@ export const TOOL_NAME_TO_DOT: Record<string, string> = {
   terminal_run: 'terminal.run',
   file_read: 'file.read',
   file_write: 'file.write',
+  file_edit: 'file.edit',
+  file_grep: 'file.grep',
   file_list: 'file.list',
   file_search: 'file.search',
   workspace_mkdir: 'workspace.mkdir',
   phone_location: 'phone.location',
   phone_contacts: 'phone.contacts',
   phone_photo: 'phone.photo',
+  web_fetch: 'web.fetch',
+  subagent_run: 'subagent.run',
 };
 
 /** Formato OpenAI: [{type:'function', function:{name,description,parameters}}] */
-export function toOpenAITools() {
-  return TOOL_SCHEMAS.map((t) => ({
+export function toOpenAITools(exclude: string[] = []) {
+  return TOOL_SCHEMAS.filter((t) => !exclude.includes(t.name)).map((t) => ({
     type: 'function' as const,
     function: { name: t.name, description: t.description, parameters: t.parameters },
   }));
 }
 
 /** Formato Anthropic: [{name,description,input_schema}] */
-export function toAnthropicTools() {
-  return TOOL_SCHEMAS.map((t) => ({
+export function toAnthropicTools(exclude: string[] = []) {
+  return TOOL_SCHEMAS.filter((t) => !exclude.includes(t.name)).map((t) => ({
     name: t.name,
     description: t.description,
     input_schema: t.parameters,

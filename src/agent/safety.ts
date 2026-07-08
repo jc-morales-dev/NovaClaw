@@ -105,7 +105,7 @@ export function classifyToolCall(call: ToolCallLike, context: SafetyContext): To
     };
   }
 
-  if (call.tool === 'file.write') {
+  if (call.tool === 'file.write' || call.tool === 'file.edit') {
     const targetPath = resolvePathArgument(String(call.arguments.path ?? ''), context.cwd);
     const outsideWorkspace = !isWithinWorkspace(targetPath, context.workspaceRoot);
     const criticalFile = isCriticalWorkspaceFile(targetPath, context.workspaceRoot);
@@ -116,7 +116,7 @@ export function classifyToolCall(call: ToolCallLike, context: SafetyContext): To
       reason: outsideWorkspace
         ? 'Sensitive file write detected outside the workspace root.'
         : criticalFile
-          ? 'Attempt to overwrite a critical workspace file (config, lockfile, server or env).'
+          ? 'Attempt to modify a critical workspace file (config, lockfile, server or env).'
           : 'Workspace file write is allowed without confirmation.',
       summary: summarizeToolCall(call),
     };

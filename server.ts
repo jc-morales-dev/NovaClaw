@@ -712,7 +712,17 @@ const nativeAgentRuntime = createNativeAgentRuntime({
     runtimeState.agent.mode = 'remote';
     runtimeState.agent.label = label;
   },
-  maxIterations: 18,
+  maxIterations: 32,
+  // Memoria persistente del proyecto (como CLAUDE.md): el agente la lee en cada
+  // turno y la actualiza él mismo cuando el usuario le enseña algo duradero.
+  getProjectContext: () => {
+    try {
+      const memoryPath = path.join(DEFAULT_CWD, 'NOVACLAW.md');
+      return fs.existsSync(memoryPath) ? fs.readFileSync(memoryPath, 'utf8') : '';
+    } catch {
+      return '';
+    }
+  },
 });
 
 /** Elige el runtime: nativo si hay key, local heurístico si no. */

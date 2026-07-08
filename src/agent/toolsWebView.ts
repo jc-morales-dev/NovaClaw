@@ -174,6 +174,83 @@ export function createWebViewToolExecutor() {
  }
  }
 
+ // ── file.edit ────────────────────────────────────────────────────────────
+ if (call.tool === 'file.edit') {
+ const targetPath = resolvePath(String(call.arguments.path ?? ''), cwd);
+ const oldString = String(call.arguments.old_string ?? '');
+ const newString = String(call.arguments.new_string ?? '');
+ const replaceAll = Boolean(call.arguments.replace_all);
+ if (!oldString) {
+ return { name: 'file.edit', command: targetPath, status: 'error', output: 'old_string is empty.', cwd };
+ }
+ try {
+ const content = await shellReadFile(targetPath);
+ const occurrences = content.split(oldString).length - 1;
+ if (occurrences === 0) {
+ return { name: 'file.edit', command: targetPath, status: 'error', output: 'old_string was NOT found in the file. It must match exactly (whitespace included). Read the file again and copy the exact snippet.', cwd };
+ }
+ if (occurrences > 1 && !replaceAll) {
+ return { name: 'file.edit', command: targetPath, status: 'error', output: `old_string appears ${occurrences} times. Add surrounding lines to make it unique, or set replace_all=true.`, cwd };
+ }
+ const updated = replaceAll ? content.split(oldString).join(newString) : content.replace(oldString, newString);
+ await shellWriteFile(targetPath, updated);
+ const n = replaceAll ? occurrences : 1;
+ return { name: 'file.edit', command: targetPath, status: 'success', output: `✓ Editado ${targetPath}: ${n} reemplazo${n === 1 ? '' : 's'}.`, cwd };
+ } catch (err: any) {
+ return { name: 'file.edit', command: targetPath, status: 'error', output: err.message, cwd };
+ }
+ }
+
+ // ── file.grep ────────────────────────────────────────────────────────────
+ if (call.tool === 'file.grep') {
+ const targetPath = resolvePath(String(call.arguments.path ?? '.'), cwd);
+ const rawPattern = String(call.arguments.pattern ?? '');
+ const maxResults = Math.min(Number(call.arguments.max_results) || 60, 200);
+ try {
+ const safePath = sanitizeShellPath(targetPath);
+ // Grep con -E; se filtran node_modules/.git después (toybox no tiene --exclude-dir).
+ const safePattern = rawPattern.replace(/'/g, "'\\''");
+ const cmd = `grep -rnE '${safePattern}' '${safePath}' 2>/dev/null | head -${maxResults * 3}`;
+ const { output } = await shellRun(cmd, cwd, 30_000);
+ const lines = output
+ .split('\n')
+ .filter((l) => l.trim() && !/\/(node_modules|\.git|dist|build)\//.test(l))
+ .slice(0, maxResults);
+ return {
+ name: 'file.grep',
+ command: `${targetPath} :: ${rawPattern}`,
+ status: 'success',
+ output: lines.length > 0 ? lines.join('\n') : `No matches for /${rawPattern}/.`,
+ cwd,
+ };
+ } catch (err: any) {
+ return { name: 'file.grep', command: `${targetPath} :: ${rawPattern}`, status: 'error', output: err.message, cwd };
+ }
+ }
+
+ // ── web.fetch ────────────────────────────────────────────────────────────
+ if (call.tool === 'web.fetch') {
+ const url = String(call.arguments.url ?? '').trim();
+ if (!/^https?:\/\//i.test(url)) {
+ return { name: 'web.fetch', command: url, status: 'error', output: 'Only http(s) URLs are supported.', cwd };
+ }
+ try {
+ const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
+ let body = await res.text();
+ const MAX_CHARS = 80 * 1024;
+ body = body
+ .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+ .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+ .replace(/<[^>]+>/g, ' ')
+ .replace(/[ \t]+/g, ' ')
+ .trim();
+ if (body.length > MAX_CHARS) body = `${body.slice(0, MAX_CHARS)}\n[... truncado ...]`;
+ return { name: 'web.fetch', command: url, status: res.ok ? 'success' : 'error', output: body || `HTTP ${res.status}`, cwd };
+ } catch (err: any) {
+ return { name: 'web.fetch', command: url, status: 'error', output: `Fetch falló (CORS/red): ${err?.message ?? err}`, cwd };
+ }
+ }
+
  // ── file.list ────────────────────────────────────────────────────────────
  if (call.tool === 'file.list') {
  const targetPath = resolvePath(String(call.arguments.path ?? '.'), cwd);

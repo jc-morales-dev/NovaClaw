@@ -164,6 +164,227 @@ export function createLocalToolExecutor() {
       };
     }
 
+    if (call.tool === 'file.edit') {
+      const targetPath = resolveTargetPath(String(call.arguments.path ?? ''), context.cwd);
+      const oldString = String(call.arguments.old_string ?? '');
+      const newString = String(call.arguments.new_string ?? '');
+      const replaceAll = Boolean(call.arguments.replace_all);
+
+      if (!oldString) {
+        return {
+          name: 'file.edit',
+          command: targetPath,
+          status: 'error',
+          output: 'old_string is empty. Provide the exact text to replace.',
+          cwd: context.cwd,
+        };
+      }
+
+      let content: string;
+      try {
+        content = await fs.readFile(targetPath, 'utf8');
+      } catch {
+        return {
+          name: 'file.edit',
+          command: targetPath,
+          status: 'error',
+          output: `File not found: ${targetPath}. Use file_write to create new files.`,
+          cwd: context.cwd,
+        };
+      }
+
+      const occurrences = content.split(oldString).length - 1;
+      if (occurrences === 0) {
+        return {
+          name: 'file.edit',
+          command: targetPath,
+          status: 'error',
+          output:
+            'old_string was NOT found in the file. It must match exactly, including whitespace and indentation. Read the file again and copy the exact snippet.',
+          cwd: context.cwd,
+        };
+      }
+      if (occurrences > 1 && !replaceAll) {
+        return {
+          name: 'file.edit',
+          command: targetPath,
+          status: 'error',
+          output: `old_string appears ${occurrences} times in the file. Include more surrounding lines to make it unique, or set replace_all=true to replace every occurrence.`,
+          cwd: context.cwd,
+        };
+      }
+
+      const updated = replaceAll
+        ? content.split(oldString).join(newString)
+        : content.replace(oldString, newString);
+      await fs.writeFile(targetPath, updated, 'utf8');
+
+      const replacedCount = replaceAll ? occurrences : 1;
+      return {
+        name: 'file.edit',
+        command: targetPath,
+        status: 'success',
+        output: `Edited ${targetPath}: replaced ${replacedCount} occurrence${replacedCount === 1 ? '' : 's'}.`,
+        cwd: context.cwd,
+      };
+    }
+
+    if (call.tool === 'file.grep') {
+      const targetPath = resolveTargetPath(String(call.arguments.path ?? '.'), context.cwd);
+      const rawPattern = String(call.arguments.pattern ?? '');
+      const maxResults = Math.min(Number(call.arguments.max_results) || 60, 200);
+
+      let regex: RegExp;
+      try {
+        regex = new RegExp(rawPattern);
+      } catch (error: any) {
+        return {
+          name: 'file.grep',
+          command: `${targetPath} :: ${rawPattern}`,
+          status: 'error',
+          output: `Invalid regular expression: ${error?.message ?? rawPattern}`,
+          cwd: context.cwd,
+        };
+      }
+
+      const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.gradle', '.next', '__pycache__']);
+      const BINARY_EXT = /\.(png|jpe?g|gif|webp|ico|zip|jar|apk|so|dex|pdf|mp3|mp4|woff2?|ttf|eot|class|bin|exe|dll)$/i;
+      const MAX_FILE_BYTES = 512 * 1024;
+      const MAX_LINE_CHARS = 300;
+      const matches: string[] = [];
+      let scannedFiles = 0;
+
+      async function grepFile(filePath: string): Promise<void> {
+        if (matches.length >= maxResults || BINARY_EXT.test(filePath)) return;
+        let stat;
+        try {
+          stat = await fs.stat(filePath);
+        } catch {
+          return;
+        }
+        if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return;
+        scannedFiles += 1;
+        let text: string;
+        try {
+          text = await fs.readFile(filePath, 'utf8');
+        } catch {
+          return;
+        }
+        if (text.includes('\0')) return; // binario disfrazado
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length && matches.length < maxResults; i += 1) {
+          if (regex.test(lines[i])) {
+            const line = lines[i].length > MAX_LINE_CHARS ? `${lines[i].slice(0, MAX_LINE_CHARS)}…` : lines[i];
+            matches.push(`${filePath}:${i + 1}: ${line.trim()}`);
+          }
+        }
+      }
+
+      async function walkGrep(dir: string, depth: number): Promise<void> {
+        if (depth > 10 || matches.length >= maxResults) return;
+        let entries: Dirent[];
+        try {
+          entries = await fs.readdir(dir, { withFileTypes: true });
+        } catch {
+          return;
+        }
+        for (const entry of entries) {
+          if (matches.length >= maxResults) return;
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            if (!entry.name.startsWith('.') && !SKIP_DIRS.has(entry.name)) {
+              await walkGrep(full, depth + 1);
+            }
+          } else {
+            await grepFile(full);
+          }
+        }
+      }
+
+      try {
+        const rootStat = await fs.stat(targetPath);
+        if (rootStat.isFile()) {
+          await grepFile(targetPath);
+        } else {
+          await walkGrep(targetPath, 0);
+        }
+      } catch {
+        return {
+          name: 'file.grep',
+          command: `${targetPath} :: ${rawPattern}`,
+          status: 'error',
+          output: `Path not found: ${targetPath}`,
+          cwd: context.cwd,
+        };
+      }
+
+      const header = matches.length >= maxResults ? `[showing first ${maxResults} matches]\n` : '';
+      return {
+        name: 'file.grep',
+        command: `${targetPath} :: ${rawPattern}`,
+        status: 'success',
+        output: matches.length > 0
+          ? `${header}${matches.join('\n')}`
+          : `No matches for /${rawPattern}/ (${scannedFiles} files scanned).`,
+        cwd: context.cwd,
+      };
+    }
+
+    if (call.tool === 'web.fetch') {
+      const url = String(call.arguments.url ?? '').trim();
+      if (!/^https?:\/\//i.test(url)) {
+        return {
+          name: 'web.fetch',
+          command: url,
+          status: 'error',
+          output: 'Only http(s) URLs are supported.',
+          cwd: context.cwd,
+        };
+      }
+      try {
+        const res = await fetch(url, {
+          signal: AbortSignal.timeout(20000),
+          headers: { 'User-Agent': 'NovaClaw/1.0 (Android agent)', Accept: 'text/html,text/plain,application/json,*/*' },
+          redirect: 'follow',
+        });
+        const contentType = res.headers.get('content-type') ?? '';
+        let body = await res.text();
+        if (/text\/html/i.test(contentType)) {
+          // Reducir HTML a texto legible para no quemar contexto.
+          body = body
+            .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+            .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/[ \t]+/g, ' ')
+            .replace(/\n\s*\n\s*\n+/g, '\n\n')
+            .trim();
+        }
+        const MAX_CHARS = 80 * 1024;
+        if (body.length > MAX_CHARS) {
+          body = `${body.slice(0, MAX_CHARS)}\n\n[... truncated, response was ${body.length} chars ...]`;
+        }
+        return {
+          name: 'web.fetch',
+          command: url,
+          status: res.ok ? 'success' : 'error',
+          output: res.ok ? body || '(empty response)' : `HTTP ${res.status}: ${body.slice(0, 500)}`,
+          cwd: context.cwd,
+        };
+      } catch (error: any) {
+        return {
+          name: 'web.fetch',
+          command: url,
+          status: 'error',
+          output: `Fetch failed: ${error?.message ?? 'network error'}`,
+          cwd: context.cwd,
+        };
+      }
+    }
+
     if (call.tool === 'file.list') {
       const targetPath = resolveTargetPath(String(call.arguments.path ?? '.'), context.cwd);
       const entries = await fs.readdir(targetPath);

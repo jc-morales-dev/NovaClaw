@@ -13,6 +13,13 @@ import { toOpenAITools, toAnthropicTools } from './toolSchemas';
 
 const ANTHROPIC_VERSION = '2023-06-01';
 
+// Extended thinking (razonamiento largo) para modelos Claude: presupuesto de
+// tokens de pensamiento + salida alta. Los proveedores OpenAI-compatible
+// gestionan su propio razonamiento internamente.
+const ANTHROPIC_THINKING_BUDGET = 4096;
+const ANTHROPIC_MAX_TOKENS = 16384;
+const OPENAI_MAX_TOKENS = 8192;
+
 export interface AgentMessage {
   role: 'user' | 'assistant' | 'tool';
   text?: string;
@@ -20,11 +27,15 @@ export interface AgentMessage {
   toolCallId?: string;
   toolName?: string;
   result?: string;
+  /** Bloques de contenido crudos de Anthropic (incluye thinking). Con extended
+   *  thinking + tool use, la API exige devolverlos INTACTOS en el turno siguiente. */
+  rawContent?: any[];
 }
 
 export interface ModelReply {
   text?: string;
   toolCalls?: Array<{ id: string; name: string; args: Record<string, any> }>;
+  rawContent?: any[];
 }
 
 function authHeaders(providerId: string, apiKey: string): Record<string, string> {
@@ -131,6 +142,12 @@ function toAnthropicMessages(messages: AgentMessage[]): any[] {
     if (m.role === 'user') {
       out.push({ role: 'user', content: [{ type: 'text', text: m.text ?? '' }] });
     } else if (m.role === 'assistant') {
+      // Con thinking activado hay que reenviar los bloques crudos tal cual
+      // (incluidos los bloques thinking firmados) o la API rechaza el turno.
+      if (m.rawContent && m.rawContent.length > 0) {
+        out.push({ role: 'assistant', content: m.rawContent });
+        continue;
+      }
       const blocks: any[] = [];
       if (m.text) blocks.push({ type: 'text', text: m.text });
       for (const tc of m.toolCalls ?? []) {
@@ -155,26 +172,50 @@ export async function callModelWithTools(input: {
   messages: AgentMessage[];
   maxTokens?: number;
   timeoutMs?: number;
+  /** Tools a excluir (p.ej. el subagente no puede lanzar más subagentes). */
+  excludeTools?: string[];
 }): Promise<ModelReply> {
   const provider = getProvider(input.providerId);
   if (!provider) throw new Error(`Proveedor desconocido: ${input.providerId}`);
   const headers = authHeaders(input.providerId, input.apiKey);
-  const maxTokens = input.maxTokens ?? 4096;
-  const signal = AbortSignal.timeout(input.timeoutMs ?? 120000);
+  const signal = AbortSignal.timeout(input.timeoutMs ?? 180000);
+  const exclude = input.excludeTools ?? [];
 
   if (provider.apiFormat === 'anthropic') {
-    const res = await fetch(`${provider.baseUrl}/messages`, {
-      method: 'POST',
-      headers,
-      signal,
-      body: JSON.stringify({
+    const maxTokens = input.maxTokens ?? ANTHROPIC_MAX_TOKENS;
+
+    async function callAnthropic(withThinking: boolean): Promise<Response> {
+      const body: Record<string, any> = {
         model: input.model,
         max_tokens: maxTokens,
         system: input.system,
         messages: toAnthropicMessages(input.messages),
-        tools: toAnthropicTools(),
-      }),
-    });
+        tools: toAnthropicTools(exclude),
+      };
+      let callHeaders = headers;
+      if (withThinking) {
+        body.thinking = { type: 'enabled', budget_tokens: ANTHROPIC_THINKING_BUDGET };
+        // interleaved thinking: el modelo puede razonar TAMBIÉN entre tool calls.
+        callHeaders = { ...headers, 'anthropic-beta': 'interleaved-thinking-2025-05-14' };
+      }
+      return fetch(`${provider!.baseUrl}/messages`, {
+        method: 'POST',
+        headers: callHeaders,
+        signal,
+        body: JSON.stringify(body),
+      });
+    }
+
+    let res = await callAnthropic(true);
+    if (res.status === 400) {
+      // Modelos Claude viejos sin extended thinking: reintentar sin razonamiento.
+      const errText = await res.text();
+      if (/thinking/i.test(errText)) {
+        res = await callAnthropic(false);
+      } else if (!res.ok) {
+        throw new Error(`Anthropic 400: ${errText}`);
+      }
+    }
     if (!res.ok) throw new Error(`Anthropic ${res.status}: ${await res.text()}`);
     const data = await res.json();
     const blocks: any[] = data.content ?? [];
@@ -182,10 +223,15 @@ export async function callModelWithTools(input: {
     const toolCalls = blocks
       .filter((b) => b.type === 'tool_use')
       .map((b) => ({ id: b.id, name: b.name, args: b.input ?? {} }));
-    return { text: text || undefined, toolCalls: toolCalls.length ? toolCalls : undefined };
+    return {
+      text: text || undefined,
+      toolCalls: toolCalls.length ? toolCalls : undefined,
+      rawContent: blocks.length ? blocks : undefined,
+    };
   }
 
   // Formato OpenAI-compatible
+  const maxTokens = input.maxTokens ?? OPENAI_MAX_TOKENS;
   const res = await fetch(`${provider.baseUrl}/chat/completions`, {
     method: 'POST',
     headers,
@@ -193,7 +239,7 @@ export async function callModelWithTools(input: {
     body: JSON.stringify({
       model: input.model,
       messages: toOpenAIMessages(input.system, input.messages),
-      tools: toOpenAITools(),
+      tools: toOpenAITools(exclude),
       tool_choice: 'auto',
       temperature: 0.2,
       max_tokens: maxTokens,
