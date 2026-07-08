@@ -7,7 +7,7 @@
 import { classifyToolCall } from './safety';
 import { callModelWithTools, type AgentMessage } from './modelClient';
 import { TOOL_NAME_TO_DOT } from './toolSchemas';
-import { trackedEvents, type AgentEventSink } from './runtime';
+import { trackedEvents, compactHistoryIfNeeded, type AgentEventSink } from './runtime';
 import type { AgentSession, AgentRuntimeEvent } from './runtime';
 import type { ToolCallLike, ToolExecutionResult } from './types';
 
@@ -317,6 +317,9 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     onEvent?: AgentEventSink,
   ): Promise<RuntimeResult> {
     session.history.push({ role: 'user', content: message });
+    // Conversaciones largas: compactar el historial persistido antes de armar
+    // el contexto, para que el turno nunca reviente la ventana del modelo.
+    session.history = compactHistoryIfNeeded(session.history);
     const messages = buildBaseMessages(session);
     return runLoop(session, messages, trackedEvents(onEvent));
   }

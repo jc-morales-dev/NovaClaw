@@ -184,7 +184,7 @@ Try again:`;
 const MAX_HISTORY_ENTRIES = 40;
 const KEEP_RECENT_ENTRIES = 20;
 
-function compactHistoryIfNeeded(history: HistoryEntry[]): HistoryEntry[] {
+export function compactHistoryIfNeeded(history: HistoryEntry[]): HistoryEntry[] {
   if (history.length <= MAX_HISTORY_ENTRIES) return history;
 
   const firstUser = history.find((entry) => entry.role === 'user');
