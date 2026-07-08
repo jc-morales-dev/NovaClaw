@@ -26,8 +26,22 @@ android {
         targetSdk = 28
         versionCode = 1
         versionName = "0.1.0-fase1"
-        ndk {
-            abiFilters += listOf("arm64-v8a")
+    }
+
+    // Un APK por arquitectura: cada flavor empaqueta SOLO su bootstrap
+    // (assets en src/<flavor>/assets/), así el APK del teléfono no arrastra
+    // los ~29 MB del bootstrap x86_64 del emulador (y viceversa).
+    //   Teléfono real:  ./gradlew assembleArm64Release  (o Arm64Debug)
+    //   Emulador x86:   ./gradlew assembleX86Debug
+    flavorDimensions += "arch"
+    productFlavors {
+        create("arm64") {
+            dimension = "arch"
+            ndk { abiFilters += listOf("arm64-v8a") }
+        }
+        create("x86") {
+            dimension = "arch"
+            ndk { abiFilters += listOf("x86_64") }
         }
     }
 

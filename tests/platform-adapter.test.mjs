@@ -25,4 +25,23 @@ for (const pagePath of pagePaths) {
 const platformSource = await readFile(new URL('../src/platform.ts', import.meta.url), 'utf8');
 assert.match(platformSource, /export const platform/, 'platform.ts should export the shared platform client');
 
+// BYOK: la key la trae el usuario. Nada de keys embebidas en el bundle.
+assert.doesNotMatch(
+  platformSource,
+  /embeddedKey|getEmbeddedZenKey/,
+  'platform.ts must not depend on an embedded API key (BYOK only)',
+);
+assert.match(
+  platformSource,
+  /createNativeAgentRuntime/,
+  'platform.ts (Capacitor) should drive the agent with the native function-calling runtime',
+);
+
+const serverSource = await readFile(new URL('../server.ts', import.meta.url), 'utf8');
+assert.doesNotMatch(
+  serverSource,
+  /embeddedKey|getEmbeddedZenKey/,
+  'server.ts must not depend on an embedded API key (BYOK only)',
+);
+
 console.log('platform-adapter.test.mjs passed');

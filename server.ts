@@ -10,20 +10,20 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 import { createAgentRuntime, createAgentSession, type AgentSession } from './src/agent/runtime';
 import { createNativeAgentRuntime } from './src/agent/nativeAgent';
-import { getEmbeddedZenKey } from './src/agent/embeddedKey';
 import { createLocalToolExecutor } from './src/agent/tools';
 import { PROVIDERS, getProvider } from './src/agent/providers';
 import { verifyAndListModels } from './src/agent/modelClient';
 
 // Configuración del proveedor de IA. Mutable en runtime para que la pantalla de
 // Ajustes pueda cambiar baseUrl/apiKey/model SIN reiniciar el agente ni recompilar.
-// Orden inicial de resolución de la key:
+// Modelo BYOK: la key SIEMPRE la trae el usuario (Ajustes → novaclaw.config.json)
+// o la env var en dev. Nunca se embebe una key en el binario distribuido.
 //   1. ZEN_API_KEY env var (dev/CI; en Android la setea RuntimeManager desde el config)
-//   2. Key embebida en el build (la que usa el APK del usuario final)
+//   2. novaclaw.config.json (lo que el usuario guardó desde Ajustes)
 //   3. Vacío → arranca el fallback heurístico local
 const zenConfig = {
   provider: process.env.NOVACLAW_PROVIDER || 'opencode-zen',
-  apiKey: process.env.ZEN_API_KEY || getEmbeddedZenKey() || '',
+  apiKey: process.env.ZEN_API_KEY || '',
   // minimax-m2.5-free fue discontinuado. Default a un modelo vigente y económico.
   baseUrl: process.env.ZEN_BASE_URL ?? 'https://opencode.ai/zen/v1',
   model: process.env.ZEN_MODEL ?? 'claude-haiku-4-5',

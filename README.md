@@ -34,8 +34,9 @@ a real coding agent from their phone. This repository contains:
   outside the workspace, writes to critical config files).
 - 256 KB hard cap on `file.read` and automatic conversation compaction.
 - Local heuristic fallback when the remote model is unreachable.
-- Embedded API key scheme with XOR obfuscation and chunked storage
-  (see `src/agent/embeddedKey.ts`).
+- **BYOK (bring your own key)**: the user provides their own API key in
+  Settings. Keys are never embedded in the binary — on Android they live in
+  the Keystore, on the server in `novaclaw.config.json` (outside git).
 
 ## Architecture
 
@@ -50,11 +51,14 @@ a real coding agent from their phone. This repository contains:
 │  Agent runtime (portable TypeScript)                         │
 │    src/agent/                                                │
 │      types.ts          Action contract                       │
-│      modelAction.ts    JSON parser + repair                  │
+│      nativeAgent.ts    Agent loop (NATIVE function-calling)  │
+│      modelClient.ts    Provider client (OpenAI + Anthropic)  │
+│      toolSchemas.ts    Native tool definitions               │
+│      providers.ts      BYOK provider registry                │
 │      safety.ts         Approval policy                       │
 │      tools.ts          Tool registry + local executor        │
-│      runtime.ts        Agent loop (approvals + compaction)   │
-│      embeddedKey.ts    Obfuscated ZEN API key                │
+│      runtime.ts        Legacy JSON loop (no-key fallback)    │
+│      modelAction.ts    JSON parser + repair (fallback only)  │
 ├──────────────────────────────────────────────────────────────┤
 │  Web adapter (today)          │  Capacitor adapter (future)  │
 │  server.ts (Express + tsx)    │  android-shell/plugins/*.kt  │
@@ -63,27 +67,19 @@ a real coding agent from their phone. This repository contains:
 
 ## Environment
 
-- `ZEN_API_KEY` — preferred in development. Takes precedence over the embedded key.
+- `ZEN_API_KEY` — development only. In production the user brings their own key.
 - `ZEN_BASE_URL` (optional, default `https://opencode.ai/zen/v1`).
-- `ZEN_MODEL` (optional, default `minimax-m2.5-free`).
+- `ZEN_MODEL` (optional, default `claude-haiku-4-5`).
 
-Resolution order at runtime:
-1. `ZEN_API_KEY` env var (dev)
-2. Embedded key in `src/agent/embeddedKey.ts` (production APK)
+Resolution order at runtime (BYOK):
+1. `ZEN_API_KEY` env var (dev/CI; on Android, RuntimeManager injects it from the config)
+2. `novaclaw.config.json` — what the user saved from Settings (outside git)
 3. If neither is set → local heuristic fallback mode
 
-### Embedding a key for a release build
-
-```bash
-npm run embed:key -- <YOUR_ZEN_API_KEY>          # embed key
-npm run embed:key -- <YOUR_KEY> --rotate-seed    # also rotate the XOR seed
-npm run embed:key:clear                          # remove embedded key
-```
-
-⚠️ **Obfuscation is not encryption.** An attacker with access to the compiled
-bundle can recover the key with a few minutes of reverse engineering.
-The recommended production approach is a lightweight proxy server that
-owns the key and authenticates the APK with a short-lived install token.
+**There is no embedded key.** Distributing an APK with a baked-in API key is
+trivially reversible and would let anyone drain the quota. Each user provides
+their own key (OpenRouter, Zen, NVIDIA, Anthropic, OpenAI) in Settings; on
+Android it is stored in the Keystore, never in the JS bundle.
 
 ## Run locally
 

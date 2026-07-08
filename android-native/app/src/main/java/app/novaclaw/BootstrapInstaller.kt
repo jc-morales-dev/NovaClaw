@@ -2,6 +2,7 @@ package app.novaclaw
 
 import android.content.Context
 import android.os.Build
+import android.os.StatFs
 import android.system.Os
 import android.util.Log
 import java.io.BufferedReader
@@ -27,6 +28,20 @@ object BootstrapInstaller {
 
     /** Prefix original con el que se compiló el bootstrap de Termux. */
     private const val TERMUX_PREFIX = "/data/data/com.termux/files/usr"
+
+    /** Espacio libre mínimo para extraer el bootstrap (~150 MB extraído + margen). */
+    private const val MIN_FREE_BYTES: Long = 300L * 1024 * 1024
+
+    fun availableBytes(context: Context): Long {
+        return try {
+            StatFs(context.filesDir.absolutePath).availableBytes
+        } catch (e: Exception) {
+            Log.w(TAG, "No se pudo medir el espacio libre: ${e.message}")
+            Long.MAX_VALUE // ante la duda, no bloquear la instalación
+        }
+    }
+
+    private fun toMb(bytes: Long): Long = bytes / (1024 * 1024)
 
     data class Paths(
         val filesDir: String,
@@ -68,6 +83,17 @@ object BootstrapInstaller {
             return
         }
 
+        // Preflight: sin espacio suficiente la extracción muere a medias y deja
+        // un prefix corrupto. Mejor avisar claro ANTES de empezar.
+        val free = availableBytes(context)
+        if (free < MIN_FREE_BYTES) {
+            throw RuntimeException(
+                "Espacio insuficiente: quedan ${toMb(free)} MB libres y se necesitan " +
+                    "al menos ${toMb(MIN_FREE_BYTES)} MB para el entorno Linux. " +
+                    "Liberá espacio en el teléfono e intentá de nuevo."
+            )
+        }
+
         onProgress("Extrayendo el entorno Linux…")
 
         val stagingPath = "${paths.filesDir}/usr-staging"
@@ -84,7 +110,19 @@ object BootstrapInstaller {
         val buffer = ByteArray(8192)
         val symlinks = mutableListOf<Pair<String, String>>()
 
-        context.assets.open(assetName).use { assetStream ->
+        // Cada flavor del APK trae SOLO su bootstrap (arm64 o x86). Si no está,
+        // el usuario instaló el APK de la arquitectura equivocada.
+        val assetStream = try {
+            context.assets.open(assetName)
+        } catch (e: Exception) {
+            throw RuntimeException(
+                "Este APK no incluye el entorno Linux para $archName. " +
+                    "Instalá el APK correcto: 'arm64' para teléfonos, 'x86' para emulador.",
+                e,
+            )
+        }
+
+        assetStream.use { _ ->
             ZipInputStream(assetStream).use { zip ->
                 var entry = zip.nextEntry
                 while (entry != null) {

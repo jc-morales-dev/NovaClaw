@@ -1,6 +1,8 @@
 # Build de NovaClaw para Android: UI (vite) + agente (esbuild) -> assets/agent.zip -> APK
-# Uso:  pwsh scripts/build-android.ps1 [-SkipUi] [-SkipApk] [-Release]
-param([switch]$SkipUi, [switch]$SkipApk, [switch]$Release)
+# Uso:  pwsh scripts/build-android.ps1 [-SkipUi] [-SkipApk] [-Release] [-Arch arm64|x86]
+#   -Arch arm64 (default) = APK para teléfonos reales (solo bootstrap aarch64)
+#   -Arch x86             = APK para el emulador (solo bootstrap x86_64)
+param([switch]$SkipUi, [switch]$SkipApk, [switch]$Release, [ValidateSet("arm64","x86")][string]$Arch = "arm64")
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $agentBuild = Join-Path $root "android-native\agent-build"
@@ -36,12 +38,14 @@ if (-not $SkipApk) {
         $env:JAVA_HOME = (Get-ChildItem "C:\Program Files\Eclipse Adoptium" -Directory | Where-Object Name -like "jdk-21*" | Sort-Object Name -Descending | Select-Object -First 1).FullName
     }
     Set-Location (Join-Path $root "android-native")
+    # Con flavors por arquitectura, la task y la ruta del APK dependen de -Arch.
+    $flavorCap = $Arch.Substring(0,1).ToUpper() + $Arch.Substring(1)
     if ($Release) {
-        .\gradlew.bat :app:assembleRelease --no-daemon
-        $apk = Join-Path $root "android-native\app\build\outputs\apk\release\app-release.apk"
+        .\gradlew.bat ":app:assemble${flavorCap}Release" --no-daemon
+        $apk = Join-Path $root "android-native\app\build\outputs\apk\$Arch\release\app-$Arch-release.apk"
     } else {
-        .\gradlew.bat :app:assembleDebug --no-daemon
-        $apk = Join-Path $root "android-native\app\build\outputs\apk\debug\app-debug.apk"
+        .\gradlew.bat ":app:assemble${flavorCap}Debug" --no-daemon
+        $apk = Join-Path $root "android-native\app\build\outputs\apk\$Arch\debug\app-$Arch-debug.apk"
     }
     $apkMb = [math]::Round((Get-Item $apk).Length/1MB,1)
     Write-Host "APK listo: $apk ($apkMb MB)" -ForegroundColor Green

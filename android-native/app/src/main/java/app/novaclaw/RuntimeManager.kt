@@ -51,6 +51,18 @@ class RuntimeManager(private val context: Context) {
             return true
         }
 
+        // Preflight de espacio: descarga (~25 MB) + extracción (~100 MB) + margen.
+        val free = BootstrapInstaller.availableBytes(context)
+        val minFree = 250L * 1024 * 1024
+        if (free < minFree) {
+            onProgress(
+                "Espacio insuficiente: quedan ${free / (1024 * 1024)} MB libres y se " +
+                    "necesitan al menos ${minFree / (1024 * 1024)} MB para Node.js. " +
+                    "Liberá espacio e intentá de nuevo."
+            )
+            return false
+        }
+
         onProgress("Descargando Node.js y dependencias…")
         val downloadCmd = """
             cd ${'$'}TMPDIR &&
@@ -91,6 +103,16 @@ class RuntimeManager(private val context: Context) {
             echo "wrappers_ok"
         """.trimIndent()
         runInPrefix(fixCmd)
+
+        // Limpieza post-instalación: los índices de `apt-get update` y la caché de
+        // paquetes quedan ocupando decenas de MB que ya no sirven para nada.
+        onProgress("Limpiando cachés de apt…")
+        val cleanupCmd = """
+            rm -rf "$prefix/var/lib/apt/lists"/* "$prefix/var/cache/apt/archives"/*.deb 2>/dev/null
+            mkdir -p "$prefix/var/lib/apt/lists/partial" "$prefix/var/cache/apt/archives/partial"
+            echo "limpieza_ok"
+        """.trimIndent()
+        runInPrefix(cleanupCmd)
 
         val ver = runInPrefix("node --version")
         onProgress("node ${ver.output.trim()}")

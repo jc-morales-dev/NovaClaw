@@ -3,16 +3,20 @@
  *
  * Modo Web: fetch() contra el servidor Express local (server.ts).
  * Modo Android (Capacitor):
- * - Llama a la Zen API directamente desde el WebView.
+ * - Llama al proveedor de IA directamente desde el WebView con
+ *   function-calling NATIVO (mismo runtime que server.ts).
  * - Shell ejecutada por ShellPlugin (ProcessBuilder → /system/bin/sh).
  * - Workspace en el storage privado: /data/data/com.novaclaw.app/files/workspace/
  * - Sesiones persistidas en localStorage (sobreviven reinicios de la app).
- * - API key guardada en Android Keystore vía SecureKeyPlugin.
+ * - BYOK: la API key la trae el usuario y vive SOLO en el Android Keystore
+ *   (SecureKeyPlugin). No hay ninguna key embebida en el binario.
  */
 
-import { createAgentRuntime, createAgentSession } from './agent/runtime';
+import { createAgentSession } from './agent/runtime';
 import type { AgentRuntimeEvent, AgentSession } from './agent/runtime';
-import { getEmbeddedZenKey } from './agent/embeddedKey';
+import { createNativeAgentRuntime } from './agent/nativeAgent';
+import { PROVIDERS, getProvider } from './agent/providers';
+import { verifyAndListModels } from './agent/modelClient';
 import { createWebViewToolExecutor } from './agent/toolsWebView';
 import { createBootstrapStatus, type BootstrapStatus } from './bootstrap/state';
 
@@ -127,12 +131,32 @@ const webAdapter: PlatformAdapter = {
 
 // ── Constantes Capacitor ──────────────────────────────────────────────────────
 
-const ZEN_API_URL = 'https://opencode.ai/zen/v1/chat/completions';
-const ZEN_MODEL = 'minimax-m2.5-free';
 const APP_FILES = '/data/data/com.novaclaw.app/files';
 const WORKSPACE = `${APP_FILES}/workspace`;
 
 const SESSION_STORAGE_KEY = 'novaclaw_sessions_v3';
+const PROVIDER_CONFIG_KEY = 'novaclaw_provider_config_v1';
+
+// Config de proveedor/modelo (la key NO va acá: vive en el Keystore).
+type CapProviderConfig = { provider: string; model: string };
+
+const DEFAULT_CAP_CONFIG: CapProviderConfig = { provider: 'opencode-zen', model: 'claude-haiku-4-5' };
+
+function loadProviderConfig(): CapProviderConfig {
+ try {
+ const raw = localStorage.getItem(PROVIDER_CONFIG_KEY);
+ if (!raw) return { ...DEFAULT_CAP_CONFIG };
+ const parsed = JSON.parse(raw);
+ return {
+ provider: typeof parsed.provider === 'string' && getProvider(parsed.provider) ? parsed.provider : DEFAULT_CAP_CONFIG.provider,
+ model: typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model : DEFAULT_CAP_CONFIG.model,
+ };
+ } catch { return { ...DEFAULT_CAP_CONFIG }; }
+}
+
+function saveProviderConfig(cfg: CapProviderConfig): void {
+ try { localStorage.setItem(PROVIDER_CONFIG_KEY, JSON.stringify(cfg)); } catch {}
+}
 
 // ── Persistencia de sesiones ──────────────────────────────────────────────────
 
@@ -172,15 +196,13 @@ function createNewSession(id: string): AgentSession {
  return s;
 }
 
-// ── API key ───────────────────────────────────────────────────────────────────
+// ── API key (BYOK: solo Android Keystore, nunca embebida) ────────────────────
 
 async function resolveApiKey(): Promise<string> {
  const Plugins: any = window.Capacitor?.Plugins ?? {};
  if (Plugins.SecureKey) {
  try { const { has } = await Plugins.SecureKey.has(); if (has) { const { value } = await Plugins.SecureKey.get(); if (value) return value as string; } } catch {}
  }
- const embedded = getEmbeddedZenKey();
- if (embedded) return embedded;
  return '';
 }
 
@@ -193,10 +215,10 @@ async function saveApiKeyNative(key: string): Promise<void> {
 async function hasApiKeyNative(): Promise<boolean> {
  const Plugins: any = window.Capacitor?.Plugins ?? {};
  if (Plugins.SecureKey) { try { const { has } = await Plugins.SecureKey.has(); if (has) return true; } catch {} }
- return !!getEmbeddedZenKey();
+ return false;
 }
 
-// ── Zen API ───────────────────────────────────────────────────────────────────
+// ── Runtime del agente (function-calling nativo, igual que server.ts) ────────
 
 function runtimeEventToChatEvent(ev: AgentRuntimeEvent): ChatEvent {
  if (ev.type === 'message') return { type: 'message', message: ev.message };
@@ -205,44 +227,16 @@ function runtimeEventToChatEvent(ev: AgentRuntimeEvent): ChatEvent {
  return { type: 'approval', approval: { summary: ev.approval.summary, reason: ev.approval.reason, toolCall: { tool: ev.approval.toolCall.tool, arguments: ev.approval.toolCall.arguments } } };
 }
 
-async function callZen(
- input: { systemPrompt: string; messages: { role: 'user' | 'assistant' | 'system'; content: string }[]; cwd: string; workspaceRoot: string },
- apiKey: string,
-): Promise<string> {
- if (!apiKey) {
- return JSON.stringify({
- kind: 'message',
- message: '⚠️ No hay API key configurada. Ve a **Ajustes → API Key** e introduce tu clave de opencode.ai para activar el agente.',
+const NO_KEY_MESSAGE = '⚠️ No hay API key configurada. Ve a **Ajustes → Proveedor de IA** e introduce tu propia clave (OpenRouter, Zen, NVIDIA…) para activar el agente.';
+
+/** Crea el runtime nativo con la config actual (key del Keystore + proveedor/modelo de localStorage). */
+function buildCapacitorRuntime(apiKey: string) {
+ const cfg = loadProviderConfig();
+ return createNativeAgentRuntime({
+ workspaceRoot: WORKSPACE,
+ getConfig: () => ({ providerId: cfg.provider, apiKey, model: cfg.model }),
+ executeToolCall: sharedToolExecutor,
  });
- }
- const body = JSON.stringify({ model: ZEN_MODEL, messages: [{ role: 'system', content: input.systemPrompt }, ...input.messages], stream: false });
- const MAX_RETRIES = 2;
- const TIMEOUT_MS = 60_000;
- for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
- const controller = new AbortController();
- const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
- try {
- const res = await fetch(ZEN_API_URL, {
- method: 'POST',
- headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
- body,
- signal: controller.signal,
- });
- clearTimeout(timer);
- if (!res.ok) {
- const t = await res.text();
- if (res.status >= 500 && attempt < MAX_RETRIES) continue;
- throw new Error(`Zen API ${res.status}: ${t.slice(0, 300)}`);
- }
- const data = await res.json();
- return data?.choices?.[0]?.message?.content ?? '';
- } catch (err: any) {
- clearTimeout(timer);
- if (err?.name === 'AbortError' && attempt < MAX_RETRIES) continue;
- throw err;
- }
- }
- return '';
 }
 
 // ── Bootstrap state ───────────────────────────────────────────────────────────
@@ -369,7 +363,8 @@ const capacitorAdapter: PlatformAdapter = {
  async sendChat(message: string, sessionId: string): Promise<ChatResponse> {
  const session = capacitorSessions.get(sessionId) ?? createNewSession(sessionId);
  const apiKey = await resolveApiKey();
- const runtime = createAgentRuntime({ workspaceRoot: WORKSPACE, callModel: (input) => callZen(input, apiKey), executeToolCall: sharedToolExecutor });
+ if (!apiKey) return { events: [{ type: 'message', message: NO_KEY_MESSAGE }] };
+ const runtime = buildCapacitorRuntime(apiKey);
  const result = await runtime.runUserTurn(session, message);
  capacitorSessions.set(sessionId, session);
  persistSessions(capacitorSessions);
@@ -380,7 +375,8 @@ const capacitorAdapter: PlatformAdapter = {
  const session = capacitorSessions.get(sessionId);
  if (!session) return { events: [{ type: 'message', message: 'Sesión no encontrada.' }] };
  const apiKey = await resolveApiKey();
- const runtime = createAgentRuntime({ workspaceRoot: WORKSPACE, callModel: (input) => callZen(input, apiKey), executeToolCall: sharedToolExecutor });
+ if (!apiKey) return { events: [{ type: 'message', message: NO_KEY_MESSAGE }] };
+ const runtime = buildCapacitorRuntime(apiKey);
  const result = await runtime.resolveApproval(session, approved);
  capacitorSessions.set(sessionId, session);
  persistSessions(capacitorSessions);
@@ -419,16 +415,32 @@ const capacitorAdapter: PlatformAdapter = {
  async saveApiKey(key: string): Promise<void> { await saveApiKeyNative(key); },
  async hasApiKey(): Promise<boolean> { return hasApiKeyNative(); },
 
- // En Capacitor la config vive en el Keystore/embedded; exponemos una vista compatible.
+ // En Capacitor la key vive en el Keystore y proveedor/modelo en localStorage.
  async getConfig(): Promise<ProviderConfig> {
- return { provider: 'opencode-zen', baseUrl: ZEN_API_URL.replace('/chat/completions', ''), model: ZEN_MODEL, hasApiKey: await hasApiKeyNative(), mode: (await hasApiKeyNative()) ? 'remote' : 'local' };
+ const cfg = loadProviderConfig();
+ const provider = getProvider(cfg.provider);
+ const hasKey = await hasApiKeyNative();
+ return { provider: cfg.provider, baseUrl: provider?.baseUrl ?? '', model: cfg.model, hasApiKey: hasKey, mode: hasKey ? 'remote' : 'local' };
  },
  async saveConfig(update: ProviderConfigUpdate): Promise<ProviderConfig> {
+ const cfg = loadProviderConfig();
+ if (typeof update.provider === 'string' && update.provider.trim() && getProvider(update.provider.trim())) cfg.provider = update.provider.trim();
+ if (typeof update.model === 'string' && update.model.trim()) cfg.model = update.model.trim();
+ saveProviderConfig(cfg);
  if (typeof update.apiKey === 'string') await saveApiKeyNative(update.apiKey);
  return capacitorAdapter.getConfig();
  },
- async getProviders() { return { providers: [], current: 'opencode-zen' }; },
- async verifyProvider() { return { ok: false, models: [], error: 'No disponible en este modo.' }; },
+ async getProviders() {
+ const cfg = loadProviderConfig();
+ return {
+ providers: PROVIDERS.map((p) => ({ id: p.id, label: p.label, needsKey: p.needsKey, keyHint: p.keyHint, note: p.note ?? null })),
+ current: cfg.provider,
+ };
+ },
+ async verifyProvider(provider: string, apiKey: string) {
+ const key = apiKey?.trim() ? apiKey.trim() : await resolveApiKey();
+ return verifyAndListModels(provider, key);
+ },
 };
 
 // ── Export ────────────────────────────────────────────────────────────────────
