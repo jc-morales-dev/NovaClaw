@@ -200,6 +200,8 @@ export async function callModelWithTools(input: {
   excludeTools?: string[];
   /** Señal de cancelación del usuario (botón Detener). Se combina con el timeout. */
   abortSignal?: AbortSignal;
+  /** Llamada de texto puro (sin tools ni thinking): p.ej. generar un título. */
+  noTools?: boolean;
 }): Promise<ModelReply> {
   const provider = getProvider(input.providerId);
   if (!provider) throw new Error(`Proveedor desconocido: ${input.providerId}`);
@@ -210,6 +212,7 @@ export async function callModelWithTools(input: {
     ? AbortSignal.any([timeoutSignal, input.abortSignal])
     : timeoutSignal;
   const exclude = input.excludeTools ?? [];
+  const noTools = Boolean(input.noTools);
 
   if (provider.apiFormat === 'anthropic') {
     const maxTokens = input.maxTokens ?? ANTHROPIC_MAX_TOKENS;
@@ -220,10 +223,10 @@ export async function callModelWithTools(input: {
         max_tokens: maxTokens,
         system: input.system,
         messages: toAnthropicMessages(input.messages),
-        tools: toAnthropicTools(exclude),
       };
+      if (!noTools) body.tools = toAnthropicTools(exclude);
       let callHeaders = headers;
-      if (withThinking) {
+      if (withThinking && !noTools) {
         body.thinking = { type: 'enabled', budget_tokens: ANTHROPIC_THINKING_BUDGET };
         // interleaved thinking: el modelo puede razonar TAMBIÉN entre tool calls.
         callHeaders = { ...headers, 'anthropic-beta': 'interleaved-thinking-2025-05-14' };
@@ -262,18 +265,21 @@ export async function callModelWithTools(input: {
 
   // Formato OpenAI-compatible
   const maxTokens = input.maxTokens ?? OPENAI_MAX_TOKENS;
+  const body: Record<string, any> = {
+    model: input.model,
+    messages: toOpenAIMessages(input.system, input.messages),
+    temperature: 0.2,
+    max_tokens: maxTokens,
+  };
+  if (!noTools) {
+    body.tools = toOpenAITools(exclude);
+    body.tool_choice = 'auto';
+  }
   const res = await fetch(`${provider.baseUrl}/chat/completions`, {
     method: 'POST',
     headers,
     signal,
-    body: JSON.stringify({
-      model: input.model,
-      messages: toOpenAIMessages(input.system, input.messages),
-      tools: toOpenAITools(exclude),
-      tool_choice: 'auto',
-      temperature: 0.2,
-      max_tokens: maxTokens,
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Modelo ${res.status}: ${await res.text()}`);
   const data = await res.json();

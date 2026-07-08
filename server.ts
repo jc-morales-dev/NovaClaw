@@ -12,7 +12,7 @@ import { createAgentRuntime, createAgentSession, type AgentSession } from './src
 import { createNativeAgentRuntime } from './src/agent/nativeAgent';
 import { createLocalToolExecutor } from './src/agent/tools';
 import { PROVIDERS, getProvider } from './src/agent/providers';
-import { verifyAndListModels } from './src/agent/modelClient';
+import { verifyAndListModels, callModelWithTools } from './src/agent/modelClient';
 
 // Configuración del proveedor de IA. Mutable en runtime para que la pantalla de
 // Ajustes pueda cambiar baseUrl/apiKey/model SIN reiniciar el agente ni recompilar.
@@ -258,6 +258,36 @@ function getOrCreateSession(sessionId: string): AgentSession {
   const session = createAgentSession(sessionId, DEFAULT_CWD);
   agentSessions.set(sessionId, session);
   return session;
+}
+
+/**
+ * Limpia la salida del modelo para quedarse con un título usable: quita el
+ * razonamiento (<think>…</think>), prefijos tipo "Título:", comillas y puntos.
+ * Toma la última línea con texto (los razonadores ponen el título al final).
+ */
+function cleanTitle(raw: string): string {
+  let text = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  let cand = lines[lines.length - 1] || '';
+  cand = cand.replace(/^(t[ií]tulo|title)\s*:\s*/i, '');
+  cand = cand.replace(/^["'#*\s]+|["'.\s]+$/g, '');
+  return cand.slice(0, 48);
+}
+
+/**
+ * Título "por tema" derivado de la primera pregunta, SIN llamar al modelo.
+ * Quita muletillas iniciales ("cuáles son", "dame", "explicame"…) y capitaliza.
+ * Es el respaldo cuando el modelo (p.ej. un razonador) no devuelve texto útil.
+ */
+function smartFallbackTitle(firstUser: string): string {
+  let t = firstUser.trim().replace(/\s+/g, ' ');
+  t = t.replace(/^(hola[,\s]+)?/i, '');
+  t = t.replace(/^(me\s+)?(puedes?|podr[ií]as?|podes|podr[ií]a)\s+/i, '');
+  t = t.replace(/^(dame|explicame|expl[ií]came|dime|cu[aá]les?\s+son|cu[aá]l\s+es|qu[eé]\s+es|c[oó]mo|como|necesito|quiero|ay[uú]dame|hazme|escr[ií]beme|dame\s+informaci[oó]n\s+sobre|habl[aá]me\s+de|cu[eé]ntame\s+sobre)\s+/i, '');
+  t = t.replace(/^(a\s+)?(los|las|el|la|un|una|unos|unas)\s+/i, '');
+  t = t.trim();
+  if (!t) return firstUser.trim().slice(0, 42) || 'Nueva conversación';
+  return (t.charAt(0).toUpperCase() + t.slice(1)).slice(0, 42);
 }
 
 /**
@@ -989,6 +1019,43 @@ async function startServer() {
           },
         ],
       });
+    }
+  });
+
+  // Título del chat según el tema: lo genera el modelo (barato) o cae a la
+  // primera pregunta del usuario si no hay key / falla.
+  app.post('/api/chat/title', async (req, res) => {
+    const { sessionId = AGENT_SESSION_ID } = req.body ?? {};
+    const session = getOrCreateSession(sessionId);
+    const firstUser = session.history.find((e) => e.role === 'user')?.content ?? '';
+    const fallback = smartFallbackTitle(firstUser);
+
+    if (!zenConfig.apiKey) {
+      return res.json({ title: fallback });
+    }
+    try {
+      const transcript = session.history
+        .slice(0, 12)
+        .map((e) => `${e.role}: ${e.content}`)
+        .join('\n')
+        .slice(0, 4000);
+      const reply = await callModelWithTools({
+        providerId: zenConfig.provider,
+        apiKey: zenConfig.apiKey,
+        model: zenConfig.model,
+        system: 'Devuelve SOLO un título corto (3 a 6 palabras, sin comillas ni punto final) que describa el tema de esta conversación. En el idioma del usuario.',
+        messages: [{ role: 'user', text: `Conversación:\n${transcript}\n\nTítulo:` }],
+        // Alto a propósito: los modelos RAZONADORES (deepseek-v4, etc.) gastan
+        // tokens "pensando" antes de escribir; con poco presupuesto el título
+        // sale vacío. 512 deja aire para el razonamiento + el título final.
+        maxTokens: 512,
+        noTools: true,
+      });
+      const title = cleanTitle(reply.text ?? '') || fallback;
+      res.json({ title });
+    } catch (error: any) {
+      console.error('Title generation failed:', error?.message);
+      res.json({ title: fallback });
     }
   });
 

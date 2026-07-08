@@ -16,7 +16,7 @@ import { createAgentSession } from './agent/runtime';
 import type { AgentRuntimeEvent, AgentSession } from './agent/runtime';
 import { createNativeAgentRuntime } from './agent/nativeAgent';
 import { PROVIDERS, getProvider } from './agent/providers';
-import { verifyAndListModels } from './agent/modelClient';
+import { verifyAndListModels, callModelWithTools } from './agent/modelClient';
 import { createWebViewToolExecutor } from './agent/toolsWebView';
 import { createBootstrapStatus, type BootstrapStatus } from './bootstrap/state';
 
@@ -65,6 +65,8 @@ interface PlatformAdapter {
  resetChat(sessionId: string): Promise<void>;
  /** Rebobina: trunca la conversación en la userIndex-ésima pregunta del usuario. */
  rewindToUserMessage(sessionId: string, userIndex: number): Promise<void>;
+ /** Genera un título corto del chat según su tema (modelo, con fallback). */
+ generateChatTitle(sessionId: string): Promise<string>;
  runTerminal(command: string, cwd?: string): Promise<TerminalResult>;
  getLogs(): Promise<string[]>;
  clearLogs(): Promise<void>;
@@ -88,6 +90,18 @@ declare global {
 
 function isCapacitor(): boolean {
  return typeof window !== 'undefined' && !!window.Capacitor?.isNativePlatform?.();
+}
+
+/** Título "por tema" derivado de la primera pregunta, sin llamar al modelo. */
+function smartFallbackTitle(firstUser: string): string {
+ let t = (firstUser ?? '').trim().replace(/\s+/g, ' ');
+ t = t.replace(/^(hola[,\s]+)?/i, '');
+ t = t.replace(/^(me\s+)?(puedes?|podr[ií]as?|podes|podr[ií]a)\s+/i, '');
+ t = t.replace(/^(dame|explicame|expl[ií]came|dime|cu[aá]les?\s+son|cu[aá]l\s+es|qu[eé]\s+es|c[oó]mo|como|necesito|quiero|ay[uú]dame|hazme|escr[ií]beme|habl[aá]me\s+de|cu[eé]ntame\s+sobre)\s+/i, '');
+ t = t.replace(/^(a\s+)?(los|las|el|la|un|una|unos|unas)\s+/i, '');
+ t = t.trim();
+ if (!t) return (firstUser ?? '').trim().slice(0, 42) || 'Nueva conversación';
+ return (t.charAt(0).toUpperCase() + t.slice(1)).slice(0, 42);
 }
 
 // ── SSE (streaming de eventos del agente) ─────────────────────────────────────
@@ -179,6 +193,13 @@ const webAdapter: PlatformAdapter = {
  },
  async rewindToUserMessage(sessionId, userIndex) {
  await fetch('/api/chat/rewind', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, userIndex }) });
+ },
+ async generateChatTitle(sessionId) {
+ try {
+ const r = await fetch('/api/chat/title', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }) });
+ const d = await r.json();
+ return d.title || 'Nueva conversación';
+ } catch { return 'Nueva conversación'; }
  },
  async runTerminal(command, cwd) {
  const r = await fetch('/api/terminal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, cwd }) });
@@ -525,6 +546,31 @@ const capacitorAdapter: PlatformAdapter = {
  (session as any).native = undefined;
  capacitorSessions.set(sessionId, session);
  persistSessions(capacitorSessions);
+ },
+
+ async generateChatTitle(sessionId: string): Promise<string> {
+ const session = capacitorSessions.get(sessionId);
+ const firstUser = session?.history.find((e) => e.role === 'user')?.content ?? '';
+ const fallback = smartFallbackTitle(firstUser);
+ const apiKey = await resolveApiKey();
+ if (!session || !apiKey) return fallback;
+ try {
+ const cfg = loadProviderConfig();
+ const transcript = session.history.slice(0, 12).map((e) => `${e.role}: ${e.content}`).join('\n').slice(0, 4000);
+ const reply = await callModelWithTools({
+ providerId: cfg.provider,
+ apiKey,
+ model: cfg.model,
+ system: 'Devuelve SOLO un título corto (3 a 6 palabras, sin comillas ni punto final) que describa el tema de esta conversación. En el idioma del usuario.',
+ messages: [{ role: 'user', text: `Conversación:\n${transcript}\n\nTítulo:` }],
+ maxTokens: 512,
+ noTools: true,
+ });
+ let text = (reply.text ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+ const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+ let cand = (lines[lines.length - 1] || '').replace(/^(t[ií]tulo|title)\s*:\s*/i, '').replace(/^["'#*\s]+|["'.\s]+$/g, '');
+ return cand.slice(0, 48) || fallback;
+ } catch { return fallback; }
  },
 
  async runTerminal(command: string, cwd?: string): Promise<TerminalResult> {

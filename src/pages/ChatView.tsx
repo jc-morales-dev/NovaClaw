@@ -86,8 +86,38 @@ type ServerEvent =
       todos: TodoItem[];
     };
 
-const sessionId = 'nova-chat-session';
-const storageKey = 'novaChatMessagesV3';
+// Sesión por defecto (retrocompat con la clave vieja) + helpers multi-conversación.
+const DEFAULT_SESSION_ID = 'nova-chat-session';
+const ACTIVE_SESSION_KEY = 'novaActiveSessionV1';
+const HISTORY_LIST_KEY = 'novaChatHistoryV1';
+
+// Clave de localStorage donde viven los mensajes de una conversación concreta.
+// La sesión por defecto conserva la clave vieja para no perder el chat existente.
+function msgStorageKey(sid: string): string {
+  return sid === DEFAULT_SESSION_ID ? 'novaChatMessagesV3' : `novaChatMsgs_${sid}`;
+}
+
+type ChatHistoryItem = { id: string; title: string; date: string; updatedAt: number };
+
+function loadHistoryList(): ChatHistoryItem[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_LIST_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore */ }
+  return [];
+}
+
+function loadMessagesFor(sid: string, welcome: string): Message[] {
+  try {
+    const raw = localStorage.getItem(msgStorageKey(sid));
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore */ }
+  return createWelcomeMessage(welcome);
+}
+
+function newSessionId(): string {
+  return `nova-${nextMessageId().toString(36)}`;
+}
 
 function createWelcomeMessage(welcomeMessage: string): Message[] {
   return [
@@ -408,43 +438,35 @@ export default function ChatView() {
   const t = translations[appLanguage as keyof typeof translations] || translations.English;
 
   const [input, setInput] = useState('');
-  const [messages, setMessages] = useState<Message[]>(() => {
-    const saved = localStorage.getItem(storageKey);
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        return createWelcomeMessage(t.welcomeMessage);
-      }
-    }
-    return createWelcomeMessage(t.welcomeMessage);
-  });
+  const [activeSessionId, setActiveSessionId] = useState<string>(
+    () => localStorage.getItem(ACTIVE_SESSION_KEY) || DEFAULT_SESSION_ID,
+  );
+  const [messages, setMessages] = useState<Message[]>(() =>
+    loadMessagesFor(localStorage.getItem(ACTIVE_SESSION_KEY) || DEFAULT_SESSION_ID, t.welcomeMessage),
+  );
   const [isTyping, setIsTyping] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const [pendingApprovalMessageId, setPendingApprovalMessageId] = useState<number | null>(null);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [chatHistory, setChatHistory] = useState(() => {
-    const saved = localStorage.getItem('chatHistoryList');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        return [];
-      }
-    }
-    return [];
-  });
+  const [chatHistory, setChatHistory] = useState<ChatHistoryItem[]>(() => loadHistoryList());
+
+  // sessionId activo usado por TODAS las llamadas al agente (multi-conversación).
+  const sessionId = activeSessionId;
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    localStorage.setItem(storageKey, JSON.stringify(messages));
-  }, [messages]);
+    localStorage.setItem(msgStorageKey(activeSessionId), JSON.stringify(messages));
+  }, [messages, activeSessionId]);
 
   useEffect(() => {
-    localStorage.setItem('chatHistoryList', JSON.stringify(chatHistory));
+    localStorage.setItem(HISTORY_LIST_KEY, JSON.stringify(chatHistory));
   }, [chatHistory]);
+
+  useEffect(() => {
+    localStorage.setItem(ACTIVE_SESSION_KEY, activeSessionId);
+  }, [activeSessionId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -481,7 +503,7 @@ export default function ChatView() {
     return () => {
       isMounted = false;
     };
-  }, [t.welcomeMessage]);
+  }, [activeSessionId, t.welcomeMessage]);
 
   function appendServerEvents(events: ServerEvent[]) {
     setMessages((prev) => {
@@ -551,6 +573,28 @@ export default function ChatView() {
     });
   };
 
+  // Registra/actualiza la conversación activa en el historial. Cuando la entrada
+  // es NUEVA, pide al modelo un título según el tema de la charla (no depende de
+  // que sea el primer turno: una sesión reutilizada igual estrena entrada).
+  const upsertHistoryEntry = async (userText: string) => {
+    const sid = activeSessionId;
+    const now = Date.now();
+    const isNew = !chatHistory.some((c) => c.id === sid);
+    setChatHistory((prev) => {
+      if (prev.some((c) => c.id === sid)) {
+        return prev.map((c) => (c.id === sid ? { ...c, updatedAt: now } : c));
+      }
+      const provisional = userText.slice(0, 40) || 'Nueva conversación';
+      return [{ id: sid, title: provisional, date: 'Ahora', updatedAt: now }, ...prev];
+    });
+    if (isNew) {
+      try {
+        const title = await platform.generateChatTitle(sid);
+        if (title) setChatHistory((prev) => prev.map((c) => (c.id === sid ? { ...c, title } : c)));
+      } catch { /* mantiene el título provisional */ }
+    }
+  };
+
   const submitText = async (rawText: string) => {
     const userText = rawText.trim();
     if (!userText || isTyping) return;
@@ -570,6 +614,8 @@ export default function ChatView() {
     abortRef.current = controller;
     try {
       await sendChatMessage(userText, controller.signal);
+      // Guardar/renombrar la conversación en el historial (título por tema).
+      await upsertHistoryEntry(userText);
     } catch (error: any) {
       if (error?.name !== 'AbortError') {
         setMessages((prev) => [
@@ -630,18 +676,39 @@ export default function ChatView() {
     }
   };
 
-  const startNewChat = async () => {
-    if (messages.length > 1) {
-      const title = messages.find((message) => message.role === 'user')?.content?.substring(0, 30) || 'Nueva conversacion';
-      setChatHistory((prev) => [{ id: Date.now(), title, date: 'Just now' }, ...prev]);
-    }
-
-    try {
-      await platform.resetChat(sessionId);
-    } catch {}
-
+  // Nueva conversación: crea un sessionId fresco y arranca en blanco. La
+  // conversación anterior queda guardada en el historial (con su contexto en el
+  // server bajo su propio sessionId) — NO se resetea.
+  const startNewChat = () => {
+    if (isTyping) stopGeneration();
+    const sid = newSessionId();
+    setActiveSessionId(sid);
     setMessages(createWelcomeMessage(t.welcomeMessage));
+    setInput('');
     setIsHistoryOpen(false);
+  };
+
+  // Abre una conversación guardada: activa su sessionId y carga sus mensajes.
+  const openConversation = (sid: string) => {
+    if (sid === activeSessionId) { setIsHistoryOpen(false); return; }
+    if (isTyping) stopGeneration();
+    setActiveSessionId(sid);
+    setMessages(loadMessagesFor(sid, t.welcomeMessage));
+    setInput('');
+    setIsHistoryOpen(false);
+  };
+
+  // Elimina una conversación: del historial, de localStorage y del server.
+  const deleteConversation = async (sid: string) => {
+    setChatHistory((prev) => prev.filter((c) => c.id !== sid));
+    try { localStorage.removeItem(msgStorageKey(sid)); } catch { /* ignore */ }
+    try { await platform.resetChat(sid); } catch { /* ignore */ }
+    // Si borré la conversación abierta, arranco una nueva en blanco.
+    if (sid === activeSessionId) {
+      const fresh = newSessionId();
+      setActiveSessionId(fresh);
+      setMessages(createWelcomeMessage(t.welcomeMessage));
+    }
   };
 
   const hasConversation = messages.some((m) => m.role === 'user');
@@ -667,23 +734,31 @@ export default function ChatView() {
             </div>
           </div>
           <div className="flex-1 overflow-y-auto p-2">
-            {chatHistory.map((item: { id: number; title: string; date: string }) => (
-              <div key={item.id} className="p-3 hover:bg-zinc-900 rounded-xl cursor-pointer transition-colors mb-1 group flex justify-between items-start">
-                <div className="overflow-hidden pr-2">
-                  <p className="text-sm font-medium text-zinc-200 truncate">{item.title}</p>
-                  <p className="text-xs text-zinc-500 mt-1">{item.date}</p>
-                </div>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setChatHistory((prev: Array<{ id: number; title: string; date: string }>) => prev.filter((historyItem) => historyItem.id !== item.id));
-                  }}
-                  className="p-1.5 text-zinc-500 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-zinc-800 rounded-lg transition-all shrink-0"
+            {chatHistory.map((item) => {
+              const isActive = item.id === activeSessionId;
+              return (
+                <div
+                  key={item.id}
+                  onClick={() => openConversation(item.id)}
+                  className={`p-3 rounded-xl cursor-pointer transition-colors mb-1 flex justify-between items-center gap-2 ${isActive ? 'bg-[#FF7A1A]/10 border border-[#FF7A1A]/25' : 'hover:bg-zinc-900 active:bg-zinc-800 border border-transparent'}`}
                 >
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            ))}
+                  <div className="overflow-hidden pr-1 min-w-0">
+                    <p className={`text-sm font-medium truncate ${isActive ? 'text-[#FFB25C]' : 'text-zinc-200'}`}>{item.title}</p>
+                    <p className="text-xs text-zinc-500 mt-0.5">{item.date}</p>
+                  </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteConversation(item.id);
+                    }}
+                    aria-label="Eliminar conversación"
+                    className="p-2 text-zinc-500 hover:text-red-400 active:text-red-400 hover:bg-zinc-800 rounded-lg transition-colors shrink-0"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              );
+            })}
             {chatHistory.length === 0 && (
               <div className="text-zinc-500 text-sm p-4 text-center mt-10">Todavía no hay conversaciones.</div>
             )}
