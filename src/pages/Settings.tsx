@@ -250,14 +250,6 @@ export default function Settings() {
               onConnect={() => handleConnector('calendar')}
               isSpanish={isSpanish}
             />
-            <ConnectorRow
-              icon={<Mic size={20} className="text-[#FFB25C]" />}
-              title={isSpanish ? 'Micrófono' : 'Microphone'}
-              desc={isSpanish ? 'Dictado y notas de voz' : 'Dictation and voice notes'}
-              on={connectors.microphone}
-              onConnect={() => handleConnector('microphone')}
-              isSpanish={isSpanish}
-            />
           </SettingsGroup>
 
           {/* Acceso total a archivos (el "modo AnyClaw") */}

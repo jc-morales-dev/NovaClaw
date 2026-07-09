@@ -197,39 +197,6 @@ export default function Home() {
 
         {/* Tarjetas secundarias */}
         <div className="space-y-2.5 pb-6">
-          <ModuleCard
-            title="OpenCode"
-            status={opencodeStatusLabel}
-            statusColor={opencodeInstalling ? 'text-amber-400' : opencodeRunning ? 'text-emerald-400' : 'text-zinc-500'}
-            icon={<Code2 size={20} className="text-[#FFB25C]" />}
-            iconBg="bg-[#FF7A1A]/12 border-[#FF7A1A]/30"
-            action={
-              <div className="flex items-center gap-3">
-                <TerminalIcon size={18} className="text-zinc-600" />
-                <ActionButton
-                  text={
-                    isTogglingOpenCode
-                      ? 'Trabajando…'
-                      : opencodeInstalling
-                        ? 'Cancelar'
-                        : opencodeRunning
-                          ? 'Detener'
-                          : runtimeStatus.opencode.installed
-                            ? 'Iniciar'
-                            : 'Instalar'
-                  }
-                  onClick={handleToggleOpenCode}
-                  disabled={isTogglingOpenCode}
-                  icon={opencodeRunning ? <Square size={13} fill="currentColor" /> : undefined}
-                />
-              </div>
-            }
-          />
-          {runtimeStatus.opencode.message && (
-            <p className="text-[11px] text-zinc-600 px-1 break-words">
-              {runtimeStatus.opencode.message}
-            </p>
-          )}
           <div onClick={() => navigate('/terminal')}>
             <ModuleCard
               title="Terminal"

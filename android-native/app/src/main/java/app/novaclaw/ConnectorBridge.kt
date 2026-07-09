@@ -41,7 +41,6 @@ class ConnectorBridge(private val activity: Activity) {
                 Manifest.permission.READ_CALENDAR,
                 Manifest.permission.WRITE_CALENDAR,
             ),
-            "microphone" to arrayOf(Manifest.permission.RECORD_AUDIO),
         )
     }
 
