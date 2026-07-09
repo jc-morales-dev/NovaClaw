@@ -6,8 +6,9 @@
  */
 import { classifyToolCall } from './safety';
 import { callModelWithTools, type AgentMessage } from './modelClient';
-import { TOOL_NAME_TO_DOT } from './toolSchemas';
+import { TOOL_NAME_TO_DOT, type ToolSchema } from './toolSchemas';
 import { trackedEvents, compactHistoryIfNeeded, type AgentEventSink } from './runtime';
+import { McpManager, type McpToolDef } from './mcp';
 import type { AgentSession, AgentRuntimeEvent } from './runtime';
 import type { ToolCallLike, ToolExecutionResult } from './types';
 
@@ -56,6 +57,7 @@ Work like Claude Code: reason internally, act with tools, and speak to the user 
 - Web (web_fetch): read documentation, APIs or any http(s) page as text. Use it when you need current information or library docs.
 - Phone: phone_location (returns a human address — answer in plain language, e.g. "Estás en <street>, <city>, <country>", never raw coordinates), phone_contacts, phone_calendar (upcoming events for the next N days), phone_photo.
 - Sub-agents (subagent_run): a fresh agent with clean context that reports back.
+- MCP tools: if extra tools named mcp__<server>__<tool> appear, they come from external MCP servers the user connected — use them like any other tool when relevant.
 
 # Project memory
 
@@ -100,6 +102,10 @@ interface NativeRuntimeOptions {
   getProjectContext?: () => Promise<string> | string;
   /** Inyección del cliente del modelo (tests / mocks). Por defecto callModelWithTools. */
   callModel?: typeof callModelWithTools;
+  /** Tools de servidores MCP conectados (Fase 2) — se ofrecen al modelo como extra. */
+  getMcpTools?: () => McpToolDef[];
+  /** Ejecuta una tool MCP (mcp__servidor__tool). */
+  callMcpTool?: (name: string, args: Record<string, any>) => Promise<string>;
 }
 
 // Estado de reanudación tras una aprobación (se guarda en la sesión, serializable).
@@ -161,6 +167,17 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
 
   function dotName(nativeName: string): string {
     return TOOL_NAME_TO_DOT[nativeName] ?? nativeName;
+  }
+
+  /** Tools de servidores MCP como ToolSchema, para ofrecerlas al modelo. */
+  function mcpExtraTools(): ToolSchema[] {
+    return (options.getMcpTools?.() ?? []).map((t) => ({
+      name: t.name,
+      description: t.description,
+      parameters: (t.inputSchema && typeof t.inputSchema === 'object'
+        ? t.inputSchema
+        : { type: 'object', properties: {} }) as ToolSchema['parameters'],
+    }));
   }
 
   /**
@@ -247,6 +264,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
           system: SUBAGENT_SYSTEM_PROMPT,
           messages,
           excludeTools: ['subagent_run', 'todo_write'],
+          extraTools: mcpExtraTools(),
         });
       } catch (error: any) {
         return `[Sub-agente falló: ${error?.message ?? 'error de modelo'}]`;
@@ -316,6 +334,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
           system,
           messages,
           abortSignal: signal,
+          extraTools: mcpExtraTools(),
         });
       } catch (error: any) {
         if (signal?.aborted) {
@@ -411,6 +430,33 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
           cwd: session.cwd,
         };
         messages.push({ role: 'tool', toolCallId: tc.id, toolName: tc.name, result: report });
+        session.history.push({ role: 'system', content: toolResultToHistory(result) });
+        events.push({ type: 'toolExecution', toolExecution: result });
+        i += 1;
+        continue;
+      }
+
+      // Tool de un servidor MCP externo (mcp__servidor__tool): la ejecuta el manager.
+      if (McpManager.isMcpTool(tc.name)) {
+        let output: string;
+        let status: 'success' | 'error' = 'success';
+        try {
+          output = options.callMcpTool
+            ? await options.callMcpTool(tc.name, tc.args ?? {})
+            : `MCP no disponible (${tc.name}).`;
+          if (!options.callMcpTool || /^(MCP tool error|Herramienta MCP desconocida)/.test(output)) status = 'error';
+        } catch (error: any) {
+          output = error?.message ?? 'Error al llamar la tool MCP.';
+          status = 'error';
+        }
+        const result: ToolExecutionResult = {
+          name: tc.name,
+          command: JSON.stringify(tc.args ?? {}).slice(0, 160),
+          status,
+          output,
+          cwd: session.cwd,
+        };
+        messages.push({ role: 'tool', toolCallId: tc.id, toolName: tc.name, result: output });
         session.history.push({ role: 'system', content: toolResultToHistory(result) });
         events.push({ type: 'toolExecution', toolExecution: result });
         i += 1;

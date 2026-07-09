@@ -231,17 +231,20 @@ export const TOOL_NAME_TO_DOT: Record<string, string> = {
   todo_write: 'todo.write',
 };
 
-/** Formato OpenAI: [{type:'function', function:{name,description,parameters}}] */
-export function toOpenAITools(exclude: string[] = []) {
-  return TOOL_SCHEMAS.filter((t) => !exclude.includes(t.name)).map((t) => ({
+/** Formato OpenAI: [{type:'function', function:{name,description,parameters}}].
+ *  `extra` son tools dinámicas (p.ej. de servidores MCP) que se suman a las base. */
+export function toOpenAITools(exclude: string[] = [], extra: ToolSchema[] = []) {
+  const base = TOOL_SCHEMAS.filter((t) => !exclude.includes(t.name));
+  return [...base, ...extra].map((t) => ({
     type: 'function' as const,
     function: { name: t.name, description: t.description, parameters: t.parameters },
   }));
 }
 
-/** Formato Anthropic: [{name,description,input_schema}] */
-export function toAnthropicTools(exclude: string[] = []) {
-  return TOOL_SCHEMAS.filter((t) => !exclude.includes(t.name)).map((t) => ({
+/** Formato Anthropic: [{name,description,input_schema}]. `extra` = tools dinámicas (MCP). */
+export function toAnthropicTools(exclude: string[] = [], extra: ToolSchema[] = []) {
+  const base = TOOL_SCHEMAS.filter((t) => !exclude.includes(t.name));
+  return [...base, ...extra].map((t) => ({
     name: t.name,
     description: t.description,
     input_schema: t.parameters,

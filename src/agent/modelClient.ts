@@ -9,7 +9,7 @@ import {
   prettyModel,
   type ModelInfo,
 } from './providers';
-import { toOpenAITools, toAnthropicTools } from './toolSchemas';
+import { toOpenAITools, toAnthropicTools, type ToolSchema } from './toolSchemas';
 
 const ANTHROPIC_VERSION = '2023-06-01';
 
@@ -198,6 +198,8 @@ export async function callModelWithTools(input: {
   timeoutMs?: number;
   /** Tools a excluir (p.ej. el subagente no puede lanzar más subagentes). */
   excludeTools?: string[];
+  /** Tools dinámicas extra (servidores MCP) para ofrecer al modelo. */
+  extraTools?: ToolSchema[];
   /** Señal de cancelación del usuario (botón Detener). Se combina con el timeout. */
   abortSignal?: AbortSignal;
   /** Llamada de texto puro (sin tools ni thinking): p.ej. generar un título. */
@@ -212,6 +214,7 @@ export async function callModelWithTools(input: {
     ? AbortSignal.any([timeoutSignal, input.abortSignal])
     : timeoutSignal;
   const exclude = input.excludeTools ?? [];
+  const extra = input.extraTools ?? [];
   const noTools = Boolean(input.noTools);
 
   if (provider.apiFormat === 'anthropic') {
@@ -224,7 +227,7 @@ export async function callModelWithTools(input: {
         system: input.system,
         messages: toAnthropicMessages(input.messages),
       };
-      if (!noTools) body.tools = toAnthropicTools(exclude);
+      if (!noTools) body.tools = toAnthropicTools(exclude, extra);
       let callHeaders = headers;
       if (withThinking && !noTools) {
         body.thinking = { type: 'enabled', budget_tokens: ANTHROPIC_THINKING_BUDGET };
@@ -272,7 +275,7 @@ export async function callModelWithTools(input: {
     max_tokens: maxTokens,
   };
   if (!noTools) {
-    body.tools = toOpenAITools(exclude);
+    body.tools = toOpenAITools(exclude, extra);
     body.tool_choice = 'auto';
   }
   const res = await fetch(`${provider.baseUrl}/chat/completions`, {

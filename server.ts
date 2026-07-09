@@ -11,6 +11,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { createAgentRuntime, createAgentSession, type AgentSession } from './src/agent/runtime';
 import { createNativeAgentRuntime } from './src/agent/nativeAgent';
 import { createLocalToolExecutor } from './src/agent/tools';
+import { McpManager, type McpServerConfig } from './src/agent/mcp';
 import { PROVIDERS, getProvider } from './src/agent/providers';
 import { verifyAndListModels, callModelWithTools } from './src/agent/modelClient';
 
@@ -80,6 +81,27 @@ function saveConfigToFile() {
 }
 
 loadConfigFromFile();
+
+// ── Servidores MCP (Fase 2): herramientas externas para el agente ──────────────
+// Config en novaclaw.mcp.json (junto al config): { "mcpServers": { "nombre":
+// { "command": "npx", "args": ["-y", "@algo/mcp-server"], "env": {...} } } }.
+const MCP_CONFIG_PATH = process.env.NOVACLAW_MCP_CONFIG
+  || path.join(path.dirname(NOVACLAW_CONFIG_PATH), 'novaclaw.mcp.json');
+const mcpManager = new McpManager();
+
+async function connectMcpServers(): Promise<void> {
+  try {
+    if (!fs.existsSync(MCP_CONFIG_PATH)) return;
+    const raw = JSON.parse(fs.readFileSync(MCP_CONFIG_PATH, 'utf8'));
+    const servers: Record<string, McpServerConfig> = raw?.mcpServers ?? raw ?? {};
+    const { connected, failed } = await mcpManager.connectAll(servers);
+    if (connected.length) console.log(`MCP conectado: ${connected.join(', ')}`);
+    for (const f of failed) console.error(`MCP falló (${f.name}): ${f.error}`);
+  } catch (error: any) {
+    console.error('No se pudo leer novaclaw.mcp.json:', error?.message);
+  }
+}
+void connectMcpServers();
 
 type ChatRole = 'user' | 'assistant' | 'system';
 
@@ -768,6 +790,8 @@ const nativeAgentRuntime = createNativeAgentRuntime({
   workspaceRoot: DEFAULT_CWD,
   getConfig: () => ({ providerId: zenConfig.provider, apiKey: zenConfig.apiKey, model: zenConfig.model }),
   executeToolCall: createLocalToolExecutor(),
+  getMcpTools: () => mcpManager.listTools(),
+  callMcpTool: (name, args) => mcpManager.call(name, args),
   onRemote: (label) => {
     runtimeState.agent.mode = 'remote';
     runtimeState.agent.label = label;
@@ -878,6 +902,15 @@ async function startServer() {
     const provided = req.headers['x-nova-token'] ?? req.query.token;
     if (provided !== AGENT_TOKEN) return res.status(403).json({ error: 'forbidden' });
     next();
+  });
+
+  // Estado de los servidores MCP conectados y sus tools (Fase 2).
+  app.get('/api/mcp', (_req, res) => {
+    const tools = mcpManager.listTools();
+    res.json({
+      tools: tools.map((t) => ({ name: t.name, server: t.server, description: t.description })),
+      servers: [...new Set(tools.map((t) => t.server))],
+    });
   });
 
   app.get('/api/runtime/status', async (_req, res) => {
