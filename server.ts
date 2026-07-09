@@ -62,12 +62,15 @@ function loadConfigFromFile() {
   }
 }
 
-/** Persiste zenConfig a novaclaw.config.json (para que sobreviva reinicios del agente). */
+/** Persiste zenConfig a novaclaw.config.json (para que sobreviva reinicios del agente).
+ *  La API KEY ya NO se guarda en texto plano acá: en Android vive cifrada en el
+ *  Android Keystore (RuntimeManager la inyecta por env al arrancar). Solo se
+ *  persisten proveedor/baseUrl/modelo, que no son secretos. */
 function saveConfigToFile() {
   try {
     fs.writeFileSync(
       NOVACLAW_CONFIG_PATH,
-      JSON.stringify({ provider: zenConfig.provider, baseUrl: zenConfig.baseUrl, apiKey: zenConfig.apiKey, model: zenConfig.model }, null, 2),
+      JSON.stringify({ provider: zenConfig.provider, baseUrl: zenConfig.baseUrl, apiKey: '', model: zenConfig.model }, null, 2),
       'utf8',
     );
   } catch (error: any) {

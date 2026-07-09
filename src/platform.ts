@@ -227,6 +227,12 @@ const webAdapter: PlatformAdapter = {
  async saveConfig(update) {
  const r = await apiFetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(update) });
  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error ?? 'No se pudo guardar la configuración.'); }
+ // Persistir la API key CIFRADA en el Android Keystore (no en texto plano en disco).
+ // El POST de arriba la deja en memoria del agente para uso inmediato; el Keystore
+ // la conserva para el próximo arranque (RuntimeManager la inyecta por env).
+ if (typeof update.apiKey === 'string' && update.apiKey.trim()) {
+ try { window.NovaClawNative?.saveApiKey?.(update.apiKey.trim()); } catch { /* sin puente nativo (web) */ }
+ }
  return r.json();
  },
  async getProviders() { const r = await apiFetch('/api/providers'); return r.json(); },

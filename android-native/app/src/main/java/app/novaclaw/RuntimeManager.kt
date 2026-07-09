@@ -238,14 +238,30 @@ class RuntimeManager(private val context: Context) {
         env["NOVACLAW_TOKEN"] = TokenStore.get(context)
 
         // Config del proveedor de IA (fuera de git): novaclaw.config.json
-        // { "baseUrl": "...", "apiKey": "...", "model": "..." }
-        // Se busca en el dir interno y en el external files dir (este último es
-        // fácil de escribir por USB: /sdcard/Android/data/app.novaclaw/files/).
+        // { "baseUrl": "...", "model": "..." } — proveedor/URL/modelo (NO secretos).
+        // Se busca en el dir interno y en el external files dir.
         val configCandidates = listOfNotNull(
             File(paths.filesDir, "novaclaw.config.json"),
             context.getExternalFilesDir(null)?.let { File(it, "novaclaw.config.json") },
         )
         configCandidates.firstOrNull { it.exists() }?.let { applyProviderConfig(it, env) }
+
+        // ── API key: SIEMPRE cifrada en el Android Keystore ────────────────────
+        // Si el Keystore ya tiene la key, se usa. Si no pero quedó una en texto
+        // plano (versión vieja o config puesta por USB), se MIGRA al Keystore y se
+        // borra del disco. El agente recibe la key SOLO por env (en memoria).
+        val ksKey = SecretStore.getApiKey(context)
+        if (!ksKey.isNullOrBlank()) {
+            env["ZEN_API_KEY"] = ksKey
+        } else {
+            val plain = env["ZEN_API_KEY"]
+            if (!plain.isNullOrBlank()) {
+                SecretStore.saveApiKey(context, plain)
+                Log.i(TAG, "API key migrada de texto plano al Keystore.")
+            }
+        }
+        // Nunca dejar la key en texto plano en el/los archivos de config.
+        for (f in configCandidates) scrubApiKeyInFile(f)
 
         val pb = ProcessBuilder(node, "${agentDir.absolutePath}/agent.cjs")
         pb.environment().clear()
@@ -281,6 +297,19 @@ class RuntimeManager(private val context: Context) {
     fun stopAgent() {
         agentProcess?.destroy()
         agentProcess = null
+    }
+
+    /** Borra la apiKey en texto plano de un novaclaw.config.json (tras migrarla al Keystore). */
+    private fun scrubApiKeyInFile(f: File) {
+        if (!f.exists()) return
+        try {
+            val json = org.json.JSONObject(f.readText())
+            if (json.optString("apiKey").isNotBlank()) {
+                json.put("apiKey", "")
+                f.writeText(json.toString(2))
+                Log.i(TAG, "API key en texto plano removida de ${f.name}.")
+            }
+        } catch (_: Exception) { /* archivo inválido: se ignora */ }
     }
 
     /** Lee la config del proveedor (URL/key/modelo) y la inyecta como env del agente. */

@@ -19,6 +19,10 @@ interface NovaClawNative {
   getConnectors(): string;
   requestConnector(key: string): void;
   openAppSettings(): void;
+  /** Guarda/consulta la API key cifrada en el Android Keystore (si la APK lo expone). */
+  saveApiKey?(key: string): void;
+  hasApiKey?(): boolean;
+  clearApiKey?(): void;
 }
 
 declare global {
