@@ -5,6 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import type { ToolCallLike, ToolExecutionResult } from './types';
+import { runDiagnostics } from './diagnostics';
 
 const exec = promisify(execCallback);
 
@@ -217,6 +218,28 @@ export function createLocalToolExecutor() {
   ): Promise<ToolExecutionResult> {
     if (call.tool === 'terminal.run') {
       return runTerminalCommand(String(call.arguments.command ?? ''), context.cwd);
+    }
+
+    if (call.tool === 'diagnostics.check') {
+      const targetPath = resolveTargetPath(String(call.arguments.path ?? ''), context.cwd);
+      try {
+        const r = await runDiagnostics(targetPath, context.cwd);
+        return {
+          name: 'diagnostics.check',
+          command: `${r.tool} · ${path.basename(targetPath)}`,
+          status: r.ok ? 'success' : 'error',
+          output: r.output,
+          cwd: context.cwd,
+        };
+      } catch (error: any) {
+        return {
+          name: 'diagnostics.check',
+          command: targetPath,
+          status: 'error',
+          output: error?.message ?? 'No se pudieron obtener diagnósticos.',
+          cwd: context.cwd,
+        };
+      }
     }
 
     if (call.tool === 'file.read') {

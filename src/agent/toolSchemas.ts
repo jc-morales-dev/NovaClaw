@@ -111,6 +111,16 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     },
   },
   {
+    name: 'diagnostics',
+    description:
+      "Check a code file for REAL errors: runs the language's type-checker/linter (tsc for TypeScript types, ruff/pyflakes for Python, eslint/node --check for JS, go vet, JSON parse) and returns the compiler/linter diagnostics. Call it right AFTER editing code to SEE the errors you may have introduced and fix them — this is how you verify code without guessing. If the checker isn't installed it tells you how to install it.",
+    parameters: {
+      type: 'object',
+      properties: { path: { type: 'string', description: 'Path to the code file to check.' } },
+      required: ['path'],
+    },
+  },
+  {
     name: 'phone_location',
     description:
       "Get the phone's current GPS location AND human-readable address (street, city, state, country). Use when the user asks where they are. Needs the Location connector.",
@@ -210,6 +220,7 @@ export const TOOL_NAME_TO_DOT: Record<string, string> = {
   file_list: 'file.list',
   file_search: 'file.search',
   workspace_mkdir: 'workspace.mkdir',
+  diagnostics: 'diagnostics.check',
   phone_location: 'phone.location',
   phone_contacts: 'phone.contacts',
   phone_photo: 'phone.photo',
