@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Ícono de notificación / barra de estado. DEBE ser una silueta blanca sobre
+  transparente: Android lo tiñe y descarta el color. Usar el ic_launcher a color
+  producía el "cuadrado blanco" que se veía en la barra.
+  Signo Nova de 4 puntas, centrado en un viewport de 24dp.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Destello nova de 4 puntas -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,3 Q13.6,9 21,12 Q13.6,15 12,21 Q10.4,15 3,12 Q10.4,9 12,3 Z" />
+    <!-- Destello secundario chico, arriba a la derecha -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M19.2,3.4 Q19.8,5.6 22,6.2 Q19.8,6.8 19.2,9 Q18.6,6.8 16.4,6.2 Q18.6,5.6 19.2,3.4 Z" />
+</vector>

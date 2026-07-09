@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Fondo del ícono: negro premium con un glow naranja cálido centrado
+     ("naranja ligado con negro"). -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
@@ -10,11 +12,11 @@
             <gradient
                 android:type="radial"
                 android:centerX="54"
-                android:centerY="46"
-                android:gradientRadius="78"
-                android:startColor="#FFAF52"
-                android:centerColor="#FF7A1A"
-                android:endColor="#C24E06" />
+                android:centerY="50"
+                android:gradientRadius="72"
+                android:startColor="#4A2408"
+                android:centerColor="#1E1209"
+                android:endColor="#0B0908" />
         </aapt:attr>
     </path>
 </vector>

@@ -156,10 +156,10 @@ class NovaClawService : Service() {
         return builder
             .setContentTitle("NovaClaw activo")
             .setContentText("El agente está corriendo en segundo plano.")
-            .setSmallIcon(R.drawable.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(openIntent)
             .setOngoing(true)
-            .addAction(R.drawable.ic_launcher, "Detener", stopIntent)
+            .addAction(R.drawable.ic_notification, "Detener", stopIntent)
             .build()
     }
 }

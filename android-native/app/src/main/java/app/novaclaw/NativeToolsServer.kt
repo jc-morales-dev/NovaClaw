@@ -358,11 +358,18 @@ class NativeToolsServer(private val context: Context, private val token: String 
                 builder.build(), projection, null, null,
                 "${android.provider.CalendarContract.Instances.BEGIN} ASC",
             )
+            val seen = HashSet<String>()
             cursor?.use {
                 while (it.moveToNext() && results.length() < 100) {
+                    val title = it.getString(0) ?: "(sin título)"
+                    val start = fmt.format(java.util.Date(it.getLong(1)))
+                    // Dedupe: mismo título + mismo día. Evita listar 23 veces el mismo
+                    // feriado por calendarios duplicados o eventos recurrentes.
+                    val key = "$title|${start.substring(0, minOf(10, start.length))}"
+                    if (!seen.add(key)) continue
                     val o = JSONObject()
-                    o.put("title", it.getString(0) ?: "(sin título)")
-                    o.put("start", fmt.format(java.util.Date(it.getLong(1))))
+                    o.put("title", title)
+                    o.put("start", start)
                     o.put("end", fmt.format(java.util.Date(it.getLong(2))))
                     it.getString(3)?.let { loc -> if (loc.isNotBlank()) o.put("location", loc) }
                     o.put("allDay", it.getInt(4) == 1)

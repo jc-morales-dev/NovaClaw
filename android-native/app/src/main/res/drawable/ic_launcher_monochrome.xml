@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Silueta para el ícono temático (monochrome, Android 13+): solo el signo Nova
+     en blanco, sin glow, dentro de la zona segura de 108dp. Android la tiñe. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,30 Q61,48 79,54 Q61,60 54,78 Q47,60 29,54 Q47,48 54,30 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M75,34 Q77,40 83,42 Q77,44 75,50 Q73,44 67,42 Q73,40 75,34 Z" />
+</vector>
