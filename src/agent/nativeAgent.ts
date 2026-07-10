@@ -8,9 +8,16 @@ import { classifyToolCall } from './safety';
 import { callModelWithTools, type AgentMessage } from './modelClient';
 import { TOOL_NAME_TO_DOT, type ToolSchema } from './toolSchemas';
 import { trackedEvents, compactHistoryIfNeeded, type AgentEventSink } from './runtime';
-import { McpManager, type McpToolDef } from './mcp';
+// SOLO el tipo: importar el valor McpManager (que usa node:child_process) rompería
+// el bundle del navegador (vite). El check de tool MCP es una función local.
+import type { McpToolDef } from './mcp';
 import type { AgentSession, AgentRuntimeEvent } from './runtime';
 import type { ToolCallLike, ToolExecutionResult } from './types';
+
+/** ¿El nombre de tool pertenece a un servidor MCP? (mcp__servidor__tool) */
+function isMcpToolName(name: string): boolean {
+  return typeof name === 'string' && name.startsWith('mcp__');
+}
 
 export const NATIVE_SYSTEM_PROMPT = `You are NovaClaw, an autonomous software-engineering and phone assistant that runs ENTIRELY on the user's Android phone, inside an embedded Linux. You are the phone-native equivalent of Claude Code / Codex: same discipline, same rigor.
 
@@ -164,7 +171,7 @@ const SUMMARIZE_KEEP_RECENT = 16; // últimas entradas que se dejan verbatim
 // En modo PLAN, estas tools quedan bloqueadas (el agente solo lee/analiza).
 const PLAN_BLOCKED_TOOLS = new Set(['file_write', 'file_edit', 'workspace_mkdir', 'terminal_run', 'subagent_run']);
 function isPlanBlocked(name: string): boolean {
-  return PLAN_BLOCKED_TOOLS.has(name) || McpManager.isMcpTool(name);
+  return PLAN_BLOCKED_TOOLS.has(name) || isMcpToolName(name);
 }
 
 const PLAN_MODE_ADDENDUM = `
@@ -466,7 +473,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
       }
 
       // Tool de un servidor MCP externo (mcp__servidor__tool): la ejecuta el manager.
-      if (McpManager.isMcpTool(tc.name)) {
+      if (isMcpToolName(tc.name)) {
         let output: string;
         let status: 'success' | 'error' = 'success';
         try {

@@ -13,13 +13,15 @@ Set-Location $root
 
 if (-not $SkipUi) {
     Write-Host "[1/4] vite build (UI)..." -ForegroundColor Cyan
-    npx vite build | Out-Null
+    npx vite build
+    if ($LASTEXITCODE -ne 0) { throw "vite build FALLO (codigo $LASTEXITCODE). Abortando para no empaquetar UI vieja." }
 }
 
 Write-Host "[2/4] esbuild (agente autocontenido)..." -ForegroundColor Cyan
 npx esbuild server.ts --bundle --platform=node --target=node18 `
     --outfile="$agentBuild\agent.cjs" --format=cjs --external:vite `
-    --external:bufferutil --external:utf-8-validate | Out-Null
+    --external:bufferutil --external:utf-8-validate
+if ($LASTEXITCODE -ne 0) { throw "esbuild FALLO (codigo $LASTEXITCODE). Abortando." }
 
 Write-Host "[3/4] empaquetar agent.zip..." -ForegroundColor Cyan
 if (Test-Path "$agentBuild\dist") { Remove-Item -Recurse -Force "$agentBuild\dist" }
