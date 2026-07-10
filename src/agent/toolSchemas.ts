@@ -173,6 +173,35 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     },
   },
   {
+    name: 'mcp_list',
+    description: 'List the MCP servers currently configured and how many tools are connected.',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'mcp_add',
+    description:
+      "Install/connect an MCP server so its tools become available to you. Use when the user asks to add/install an MCP (e.g. \"instalá el MCP de GitHub\"). Most MCP servers run via npx: command='npx', args=['-y','<package>']. Common packages: @modelcontextprotocol/server-github, @modelcontextprotocol/server-filesystem, @modelcontextprotocol/server-postgres, @modelcontextprotocol/server-slack, @modelcontextprotocol/server-brave-search, firecrawl-mcp, @notionhq/notion-mcp-server. If you don't know the exact package, web_fetch to find the official one first. Give the server a short lowercase name.",
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Short lowercase id for the server (e.g. "github").' },
+        command: { type: 'string', description: 'Command to launch it, usually "npx".' },
+        args: { type: 'array', items: { type: 'string' }, description: 'Arguments, e.g. ["-y","@modelcontextprotocol/server-github"].' },
+        env: { type: 'object', description: 'Optional env vars the server needs (e.g. API tokens).' },
+      },
+      required: ['name', 'command'],
+    },
+  },
+  {
+    name: 'mcp_remove',
+    description: 'Remove/disconnect a previously installed MCP server by its name.',
+    parameters: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'The server name to remove.' } },
+      required: ['name'],
+    },
+  },
+  {
     name: 'todo_write',
     description:
       'Maintain a visible task plan for a multi-step job. Call it at the start to lay out the steps, and again to update statuses as you go (mark one in_progress before working on it, completed when done). The user sees the checklist update live. Use it for non-trivial tasks with 3+ steps; skip it for single-step requests.',
@@ -221,6 +250,9 @@ export const TOOL_NAME_TO_DOT: Record<string, string> = {
   file_search: 'file.search',
   workspace_mkdir: 'workspace.mkdir',
   diagnostics: 'diagnostics.check',
+  mcp_list: 'mcp.list',
+  mcp_add: 'mcp.add',
+  mcp_remove: 'mcp.remove',
   phone_location: 'phone.location',
   phone_contacts: 'phone.contacts',
   phone_photo: 'phone.photo',

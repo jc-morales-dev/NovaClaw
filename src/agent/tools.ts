@@ -214,7 +214,16 @@ async function runTerminalCommand(command: string, cwd: string): Promise<ToolExe
 /** Cambio de archivo para el journal de "deshacer". */
 export type FileChange = { path: string; before: string | null; existedBefore: boolean };
 
-export function createLocalToolExecutor(opts: { onFileChange?: (change: FileChange) => void } = {}) {
+/** Control de servidores MCP para que el AGENTE pueda instalar/quitar tools solo. */
+export type McpControls = {
+  list: () => { configured: Record<string, { command: string; args?: string[] }>; connected: Array<{ name: string; server: string }> };
+  add: (name: string, command: string, args: string[], env?: Record<string, string>) => Promise<{ connected: string[]; failed: Array<{ name: string; error: string }> }>;
+  remove: (name: string) => Promise<{ connected: string[]; failed: Array<{ name: string; error: string }> }>;
+};
+
+export function createLocalToolExecutor(
+  opts: { onFileChange?: (change: FileChange) => void; mcp?: McpControls } = {},
+) {
   return async function executeToolCall(
     call: ToolCallLike,
     context: ToolExecutionContext,
@@ -242,6 +251,54 @@ export function createLocalToolExecutor(opts: { onFileChange?: (change: FileChan
           output: error?.message ?? 'No se pudieron obtener diagnósticos.',
           cwd: context.cwd,
         };
+      }
+    }
+
+    // ── Gestión de servidores MCP por el agente ("instalá el MCP de X") ────────
+    if (call.tool === 'mcp.list') {
+      if (!opts.mcp) return { name: 'mcp.list', command: 'list', status: 'error', output: 'MCP no disponible en este runtime.', cwd: context.cwd };
+      const { configured, connected } = opts.mcp.list();
+      const names = Object.keys(configured);
+      const lines = names.length
+        ? names.map((n) => `- ${n}: ${configured[n].command} ${(configured[n].args ?? []).join(' ')}`).join('\n')
+        : '(ningún servidor MCP configurado)';
+      return { name: 'mcp.list', command: 'list', status: 'success', output: `Servidores MCP:\n${lines}\n\nTools conectadas: ${connected.length}`, cwd: context.cwd };
+    }
+
+    if (call.tool === 'mcp.add') {
+      if (!opts.mcp) return { name: 'mcp.add', command: 'add', status: 'error', output: 'MCP no disponible en este runtime.', cwd: context.cwd };
+      const name = String(call.arguments.name ?? '').trim();
+      const command = String(call.arguments.command ?? '').trim();
+      const args = Array.isArray(call.arguments.args) ? call.arguments.args.map((a: any) => String(a)) : [];
+      const env = (call.arguments.env && typeof call.arguments.env === 'object') ? (call.arguments.env as Record<string, string>) : undefined;
+      if (!name || !command) return { name: 'mcp.add', command: `${name}`, status: 'error', output: 'Faltan "name" o "command".', cwd: context.cwd };
+      try {
+        const r = await opts.mcp.add(name, command, args, env);
+        const ok = r.connected.includes(name);
+        const fail = r.failed.find((f) => f.name === name);
+        return {
+          name: 'mcp.add',
+          command: `${name}: ${command} ${args.join(' ')}`.trim(),
+          status: ok ? 'success' : 'error',
+          output: ok
+            ? `MCP "${name}" instalado y conectado. Ahora tenés sus herramientas disponibles.`
+            : `No se pudo conectar "${name}": ${fail?.error ?? 'error desconocido'}.`,
+          cwd: context.cwd,
+        };
+      } catch (error: any) {
+        return { name: 'mcp.add', command: name, status: 'error', output: error?.message ?? 'No se pudo agregar el MCP.', cwd: context.cwd };
+      }
+    }
+
+    if (call.tool === 'mcp.remove') {
+      if (!opts.mcp) return { name: 'mcp.remove', command: 'remove', status: 'error', output: 'MCP no disponible en este runtime.', cwd: context.cwd };
+      const name = String(call.arguments.name ?? '').trim();
+      if (!name) return { name: 'mcp.remove', command: '', status: 'error', output: 'Falta "name".', cwd: context.cwd };
+      try {
+        await opts.mcp.remove(name);
+        return { name: 'mcp.remove', command: name, status: 'success', output: `MCP "${name}" quitado.`, cwd: context.cwd };
+      } catch (error: any) {
+        return { name: 'mcp.remove', command: name, status: 'error', output: error?.message ?? 'No se pudo quitar el MCP.', cwd: context.cwd };
       }
     }
 

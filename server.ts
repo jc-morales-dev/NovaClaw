@@ -100,6 +100,10 @@ function readMcpConfig(): Record<string, McpServerConfig> {
   }
 }
 
+function writeMcpConfig(servers: Record<string, McpServerConfig>): void {
+  fs.writeFileSync(MCP_CONFIG_PATH, JSON.stringify({ mcpServers: servers }, null, 2), 'utf8');
+}
+
 /** (Re)conecta todos los servidores MCP del config. Devuelve el resultado. */
 async function reconnectMcp(): Promise<{ connected: string[]; failed: Array<{ name: string; error: string }> }> {
   mcpManager.closeAll();
@@ -791,6 +795,25 @@ const sharedExecutor = createLocalToolExecutor({
   onFileChange: (c) => {
     changeJournal.push(c);
     if (changeJournal.length > 200) changeJournal.shift();
+  },
+  // Deja que el AGENTE instale/quite servidores MCP ("instalá el MCP de X").
+  mcp: {
+    list: () => ({
+      configured: readMcpConfig() as Record<string, { command: string; args?: string[] }>,
+      connected: mcpManager.listTools().map((t) => ({ name: t.name, server: t.server })),
+    }),
+    add: async (name, command, args, env) => {
+      const cfg = readMcpConfig();
+      cfg[name] = { command, args, ...(env ? { env } : {}) };
+      writeMcpConfig(cfg);
+      return reconnectMcp();
+    },
+    remove: async (name) => {
+      const cfg = readMcpConfig();
+      delete cfg[name];
+      writeMcpConfig(cfg);
+      return reconnectMcp();
+    },
   },
 });
 

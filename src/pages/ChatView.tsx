@@ -17,7 +17,6 @@ import {
   Square,
   Terminal as TerminalIcon,
   Trash2,
-  Undo2,
   X,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -86,6 +85,13 @@ type ServerEvent =
       type: 'todo';
       todos: TodoItem[];
     };
+
+// Comandos slash del chat (se ejecutan localmente, NO van al agente).
+const SLASH_COMMANDS: Array<{ cmd: string; desc: string }> = [
+  { cmd: '/deshacer', desc: 'Revertir el último cambio del agente' },
+  { cmd: '/plan', desc: 'Modo Plan — el agente solo analiza y propone' },
+  { cmd: '/build', desc: 'Modo Build — el agente ejecuta los cambios' },
+];
 
 // Sesión por defecto (retrocompat con la clave vieja) + helpers multi-conversación.
 const DEFAULT_SESSION_ID = 'nova-chat-session';
@@ -629,6 +635,15 @@ export default function ChatView() {
     }
   };
 
+  // Ejecuta un comando slash localmente. Devuelve true si lo manejó.
+  const runSlashCommand = async (raw: string): Promise<boolean> => {
+    const c = raw.trim().toLowerCase();
+    if (c === '/deshacer' || c === '/undo') { setInput(''); await handleUndo(); return true; }
+    if (c === '/plan') { setMode('plan'); setInput(''); return true; }
+    if (c === '/build') { setMode('build'); setInput(''); return true; }
+    return false;
+  };
+
   // Botón Detener: aborta el turno en curso (corta el stream y para el agente).
   const stopGeneration = () => {
     abortRef.current?.abort();
@@ -689,6 +704,12 @@ export default function ChatView() {
   const submitText = async (rawText: string) => {
     const userText = rawText.trim();
     if (!userText || isTyping) return;
+
+    // Comandos slash (/deshacer, /plan, /build) se ejecutan acá, no van al agente.
+    if (userText.startsWith('/')) {
+      const handled = await runSlashCommand(userText);
+      if (handled) return;
+    }
 
     setMessages((prev) => [
       ...prev,
@@ -870,9 +891,6 @@ export default function ChatView() {
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_6px] shadow-emerald-500/60" />
         </div>
         <div className="flex items-center">
-          <button onClick={handleUndo} className="p-2 text-zinc-400 hover:text-zinc-100 transition-colors rounded-full" title="Deshacer último cambio">
-            <Undo2 size={19} />
-          </button>
           <button onClick={startNewChat} className="p-2 text-zinc-400 hover:text-zinc-100 transition-colors rounded-full" title="Nuevo chat">
             <Plus size={20} />
           </button>
@@ -990,6 +1008,25 @@ export default function ChatView() {
 
       {/* Composer */}
       <div className="px-3 pt-2 pb-7 bg-gradient-to-t from-[#0B0908] via-[#0B0908] to-transparent">
+        {/* Menú de comandos slash (aparece al escribir "/") */}
+        {input.startsWith('/') && !isTyping && (
+          <div className="mb-2 rounded-2xl bg-zinc-900/95 border border-white/10 overflow-hidden shadow-xl">
+            {SLASH_COMMANDS.filter((c) => c.cmd.startsWith(input.trim().toLowerCase())).map((c) => (
+              <button
+                key={c.cmd}
+                type="button"
+                onClick={() => runSlashCommand(c.cmd)}
+                className="w-full text-left px-3.5 py-2.5 hover:bg-zinc-800 active:bg-zinc-800 transition-colors flex items-center gap-2.5 border-b border-white/5 last:border-0"
+              >
+                <span className="text-[#FFB25C] font-mono text-[13px] font-semibold">{c.cmd}</span>
+                <span className="text-zinc-500 text-[12px]">{c.desc}</span>
+              </button>
+            ))}
+            {SLASH_COMMANDS.filter((c) => c.cmd.startsWith(input.trim().toLowerCase())).length === 0 && (
+              <div className="px-3.5 py-2.5 text-zinc-600 text-[12px]">Sin comandos para "{input.trim()}"</div>
+            )}
+          </div>
+        )}
         {/* Modo: Build (ejecuta) / Plan (solo analiza y propone) */}
         <div className="flex items-center gap-1 mb-2 px-1">
           <button

@@ -571,10 +571,33 @@ export default function Settings() {
             {/* MCP modal: editor de config + tools conectadas */}
             {activeModal === 'mcp' && (
               <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
-                <p className="text-zinc-400 text-[13px] leading-relaxed">
+                {/* Lo más fácil: pedirle al agente */}
+                <div className="rounded-2xl border border-[#FF7A1A]/25 bg-[#FF7A1A]/[0.06] p-3.5">
+                  <p className="text-[13px] text-zinc-200 leading-relaxed">
+                    💡 <span className="font-semibold">{isSpanish ? 'Lo más fácil:' : 'Easiest:'}</span>{' '}
+                    {isSpanish
+                      ? 'pedile al agente en el chat, por ejemplo '
+                      : 'just ask the agent in chat, e.g. '}
+                    <span className="text-[#FFB25C] font-medium">"{isSpanish ? 'instalá el MCP de GitHub' : 'install the GitHub MCP'}"</span>
+                    {isSpanish ? ' y lo instala solo.' : ' and it installs it for you.'}
+                  </p>
+                </div>
+                {mcpTools.length > 0 && (
+                  <div className="space-y-1.5">
+                    <p className="text-emerald-400 text-[12px] font-semibold">
+                      {mcpTools.length} {isSpanish ? 'herramientas conectadas:' : 'tools connected:'}
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {mcpTools.map((tl) => (
+                        <span key={tl.name} className="text-[10.5px] font-mono px-2 py-1 rounded-lg bg-zinc-800 text-zinc-300">{tl.name}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <p className="text-zinc-500 text-[12px] leading-relaxed pt-1">
                   {isSpanish
-                    ? 'Pegá la config de tus servidores MCP (formato Claude Desktop) y tocá Guardar. Ejemplo:'
-                    : 'Paste your MCP servers config (Claude Desktop format) and tap Save. Example:'}
+                    ? 'Avanzado: también podés pegar la config a mano (formato Claude Desktop):'
+                    : 'Advanced: you can also paste the config manually (Claude Desktop format):'}
                 </p>
                 <pre className="text-[10.5px] text-zinc-500 bg-zinc-950 border border-zinc-800 rounded-xl p-3 overflow-x-auto leading-snug">{`{
   "mcpServers": {
@@ -593,18 +616,6 @@ export default function Settings() {
                   className="w-full h-44 bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-[12px] font-mono text-zinc-200 resize-none focus:outline-none focus:border-[#FF7A1A]/50"
                 />
                 {mcpError && <p className="text-red-400 text-[12px] leading-snug">{mcpError}</p>}
-                {mcpTools.length > 0 && (
-                  <div className="space-y-1.5">
-                    <p className="text-emerald-400 text-[12px] font-semibold">
-                      {mcpTools.length} {isSpanish ? 'herramientas conectadas:' : 'tools connected:'}
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {mcpTools.map((tl) => (
-                        <span key={tl.name} className="text-[10.5px] font-mono px-2 py-1 rounded-lg bg-zinc-800 text-zinc-300">{tl.name}</span>
-                      ))}
-                    </div>
-                  </div>
-                )}
                 <button
                   type="button"
                   disabled={mcpSaving}
