@@ -40,6 +40,9 @@ export type ProviderConfigUpdate = { provider?: string; baseUrl?: string; model?
 export type ProviderInfo = { id: string; label: string; needsKey: boolean; keyHint: string; note: string | null };
 export type ModelInfo = { id: string; label: string; tier?: 'premium' | 'value' };
 export type VerifyResult = { ok: boolean; models: ModelInfo[]; error?: string };
+export type McpServersConfig = Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
+export type McpSaveResult = { connected: string[]; failed: Array<{ name: string; error: string }>; tools: Array<{ name: string; server: string }> };
+export type McpStatus = { tools: Array<{ name: string; server: string; description?: string }>; servers: string[] };
 
 type RuntimeSnapshot = {
  agent: { status: 'stopped' | 'running'; mode: 'remote' | 'local'; label: string };
@@ -59,7 +62,7 @@ interface PlatformAdapter {
  /** Como sendChat pero entrega cada evento EN VIVO vía onEvent (streaming).
   * Si el streaming no está disponible, cae a sendChat y emite igual por onEvent.
   * El `signal` opcional permite DETENER la respuesta en curso (botón Stop). */
- sendChatStream(message: string, sessionId: string, onEvent: (ev: ChatEvent) => void, signal?: AbortSignal): Promise<ChatResponse>;
+ sendChatStream(message: string, sessionId: string, onEvent: (ev: ChatEvent) => void, signal?: AbortSignal, mode?: 'plan' | 'build'): Promise<ChatResponse>;
  approveActionStream(sessionId: string, approved: boolean, onEvent: (ev: ChatEvent) => void, signal?: AbortSignal): Promise<ChatResponse>;
  getChatHistory(sessionId: string): Promise<ChatHistoryResponse>;
  resetChat(sessionId: string): Promise<void>;
@@ -78,6 +81,12 @@ interface PlatformAdapter {
  saveConfig(update: ProviderConfigUpdate): Promise<ProviderConfig>;
  getProviders(): Promise<{ providers: ProviderInfo[]; current: string }>;
  verifyProvider(provider: string, apiKey: string): Promise<VerifyResult>;
+ /** Servidores MCP (herramientas externas). */
+ getMcpConfig(): Promise<{ mcpServers: McpServersConfig }>;
+ saveMcpConfig(servers: McpServersConfig): Promise<McpSaveResult>;
+ getMcpStatus(): Promise<McpStatus>;
+ /** Deshace el último archivo escrito/editado por el agente. */
+ undo(): Promise<{ ok: boolean; path?: string; message?: string }>;
 }
 
 // ── Detección de Capacitor ────────────────────────────────────────────────────
@@ -168,9 +177,9 @@ const webAdapter: PlatformAdapter = {
  const r = await apiFetch('/api/chat/approval', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, approved }) });
  return r.json();
  },
- async sendChatStream(message, sessionId, onEvent, signal) {
+ async sendChatStream(message, sessionId, onEvent, signal, mode) {
  try {
- const r = await apiFetch('/api/chat/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, sessionId }), signal });
+ const r = await apiFetch('/api/chat/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, sessionId, mode }), signal });
  if (!r.ok || !r.body) throw new Error(`stream ${r.status}`);
  const events = await consumeSse(r, onEvent);
  return { events };
@@ -240,6 +249,14 @@ const webAdapter: PlatformAdapter = {
  const r = await apiFetch('/api/provider/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, apiKey }) });
  return r.json();
  },
+ async getMcpConfig() { const r = await apiFetch('/api/mcp/config'); return r.json(); },
+ async saveMcpConfig(servers) {
+ const r = await apiFetch('/api/mcp/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mcpServers: servers }) });
+ if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error ?? 'No se pudo guardar la config MCP.'); }
+ return r.json();
+ },
+ async getMcpStatus() { const r = await apiFetch('/api/mcp'); return r.json(); },
+ async undo() { const r = await apiFetch('/api/undo', { method: 'POST' }); return r.json(); },
 };
 
 // ── Constantes Capacitor ──────────────────────────────────────────────────────
@@ -498,7 +515,7 @@ const capacitorAdapter: PlatformAdapter = {
  },
 
  // El runtime vive en el mismo proceso: streaming = pasar el sink directo.
- async sendChatStream(message, sessionId, onEvent, signal) {
+ async sendChatStream(message, sessionId, onEvent, signal, mode) {
  const session = capacitorSessions.get(sessionId) ?? createNewSession(sessionId);
  const apiKey = await resolveApiKey();
  if (!apiKey) {
@@ -507,7 +524,7 @@ const capacitorAdapter: PlatformAdapter = {
  return { events: [ev] };
  }
  const runtime = buildCapacitorRuntime(apiKey);
- const result = await runtime.runUserTurn(session, message, (ev) => onEvent(runtimeEventToChatEvent(ev)), signal);
+ const result = await runtime.runUserTurn(session, message, (ev) => onEvent(runtimeEventToChatEvent(ev)), signal, mode);
  capacitorSessions.set(sessionId, session);
  persistSessions(capacitorSessions);
  return { events: result.events.map(runtimeEventToChatEvent) };
@@ -633,6 +650,11 @@ const capacitorAdapter: PlatformAdapter = {
  const key = apiKey?.trim() ? apiKey.trim() : await resolveApiKey();
  return verifyAndListModels(provider, key);
  },
+ // MCP no aplica en el path Capacitor (el APK usa el webAdapter contra el server).
+ async getMcpConfig() { return { mcpServers: {} }; },
+ async saveMcpConfig() { return { connected: [], failed: [], tools: [] }; },
+ async getMcpStatus() { return { tools: [], servers: [] }; },
+ async undo() { return { ok: false, message: 'Deshacer no está disponible en este modo.' }; },
 };
 
 // ── Export ────────────────────────────────────────────────────────────────────

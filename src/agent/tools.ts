@@ -211,7 +211,10 @@ async function runTerminalCommand(command: string, cwd: string): Promise<ToolExe
   }
 }
 
-export function createLocalToolExecutor() {
+/** Cambio de archivo para el journal de "deshacer". */
+export type FileChange = { path: string; before: string | null; existedBefore: boolean };
+
+export function createLocalToolExecutor(opts: { onFileChange?: (change: FileChange) => void } = {}) {
   return async function executeToolCall(
     call: ToolCallLike,
     context: ToolExecutionContext,
@@ -281,6 +284,11 @@ export function createLocalToolExecutor() {
     if (call.tool === 'file.write') {
       const targetPath = resolveTargetPath(String(call.arguments.path ?? ''), context.cwd);
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      // Snapshot para deshacer: contenido previo (o marca de que no existía).
+      let before: string | null = null;
+      let existedBefore = false;
+      try { before = await fs.readFile(targetPath, 'utf8'); existedBefore = true; } catch { before = null; existedBefore = false; }
+      opts.onFileChange?.({ path: targetPath, before, existedBefore });
       await fs.writeFile(targetPath, String(call.arguments.content ?? ''), 'utf8');
       return {
         name: 'file.write',
@@ -344,6 +352,7 @@ export function createLocalToolExecutor() {
       const updated = replaceAll
         ? content.split(oldString).join(newString)
         : content.replace(oldString, newString);
+      opts.onFileChange?.({ path: targetPath, before: content, existedBefore: true });
       await fs.writeFile(targetPath, updated, 'utf8');
 
       const replacedCount = replaceAll ? occurrences : 1;

@@ -341,6 +341,7 @@ export function createAgentRuntime(options: RuntimeOptions) {
     message: string,
     onEvent?: AgentEventSink,
     _signal?: AbortSignal,
+    _mode?: 'plan' | 'build',
   ): Promise<RuntimeResult> {
     session.history.push({ role: 'user', content: message });
     return continueLoop(session, trackedEvents(onEvent));

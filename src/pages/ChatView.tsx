@@ -17,6 +17,7 @@ import {
   Square,
   Terminal as TerminalIcon,
   Trash2,
+  Undo2,
   X,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -509,6 +510,7 @@ export default function ChatView() {
   const t = translations[appLanguage as keyof typeof translations] || translations.English;
 
   const [input, setInput] = useState('');
+  const [mode, setMode] = useState<'plan' | 'build'>('build');
   const [activeSessionId, setActiveSessionId] = useState<string>(
     () => localStorage.getItem(ACTIVE_SESSION_KEY) || DEFAULT_SESSION_ID,
   );
@@ -606,8 +608,26 @@ export default function ChatView() {
 
   async function sendChatMessage(userText: string, signal: AbortSignal) {
     // Streaming: cada evento (mensaje, tool call, aprobación) aparece EN VIVO.
-    await platform.sendChatStream(userText, sessionId, (ev) => appendServerEvents([ev]), signal);
+    // En modo Plan el agente solo analiza y propone; en Build ejecuta.
+    await platform.sendChatStream(userText, sessionId, (ev) => appendServerEvents([ev]), signal, mode);
   }
+
+  // Deshacer: revierte el último archivo que el agente escribió/editó.
+  const handleUndo = async () => {
+    try {
+      const r = await platform.undo();
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextMessageId(),
+          role: 'assistant',
+          content: r.ok ? `↩️ Deshecho el último cambio: \`${r.path}\`` : (r.message ?? 'No hay cambios para deshacer.'),
+        },
+      ]);
+    } catch {
+      /* sin conexión con el agente */
+    }
+  };
 
   // Botón Detener: aborta el turno en curso (corta el stream y para el agente).
   const stopGeneration = () => {
@@ -850,6 +870,9 @@ export default function ChatView() {
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_6px] shadow-emerald-500/60" />
         </div>
         <div className="flex items-center">
+          <button onClick={handleUndo} className="p-2 text-zinc-400 hover:text-zinc-100 transition-colors rounded-full" title="Deshacer último cambio">
+            <Undo2 size={19} />
+          </button>
           <button onClick={startNewChat} className="p-2 text-zinc-400 hover:text-zinc-100 transition-colors rounded-full" title="Nuevo chat">
             <Plus size={20} />
           </button>
@@ -967,6 +990,26 @@ export default function ChatView() {
 
       {/* Composer */}
       <div className="px-3 pt-2 pb-7 bg-gradient-to-t from-[#0B0908] via-[#0B0908] to-transparent">
+        {/* Modo: Build (ejecuta) / Plan (solo analiza y propone) */}
+        <div className="flex items-center gap-1 mb-2 px-1">
+          <button
+            type="button"
+            onClick={() => setMode('build')}
+            className={`px-2.5 py-1 rounded-full text-[11.5px] font-semibold border transition-colors ${mode === 'build' ? 'bg-[#FF7A1A]/15 text-[#FFB25C] border-[#FF7A1A]/30' : 'text-zinc-500 border-transparent hover:text-zinc-300'}`}
+          >
+            Build
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('plan')}
+            className={`px-2.5 py-1 rounded-full text-[11.5px] font-semibold border transition-colors ${mode === 'plan' ? 'bg-sky-500/15 text-sky-300 border-sky-500/30' : 'text-zinc-500 border-transparent hover:text-zinc-300'}`}
+          >
+            Plan
+          </button>
+          <span className="text-[10.5px] text-zinc-600 ml-1">
+            {mode === 'plan' ? 'Solo analiza y propone' : 'Ejecuta cambios'}
+          </span>
+        </div>
         <form
           onSubmit={handleSubmit}
           className="flex items-end gap-1.5 bg-zinc-900/90 border border-white/10 rounded-[26px] pl-1.5 pr-1.5 py-1.5 focus-within:border-[#FF7A1A]/40 focus-within:ring-2 focus-within:ring-[#FF7A1A]/15 transition-all shadow-lg shadow-black/40"

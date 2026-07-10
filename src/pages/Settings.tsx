@@ -16,8 +16,8 @@ import {
   MapPin,
   Users,
   Calendar,
-  Mic,
   Plug,
+  Wrench,
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { translations } from '../translations';
@@ -59,6 +59,36 @@ export default function Settings() {
   const [connectors, setConnectors] = useState<ConnectorState>(() => getConnectors());
   const nativeConnectors = hasNativeConnectors();
 
+  // MCP: herramientas externas (Fase 2). Config en JSON estilo Claude Desktop.
+  const [mcpJson, setMcpJson] = useState('{\n  "mcpServers": {}\n}');
+  const [mcpTools, setMcpTools] = useState<Array<{ name: string; server: string }>>([]);
+  const [mcpSaving, setMcpSaving] = useState(false);
+  const [mcpError, setMcpError] = useState('');
+
+  async function handleSaveMcp() {
+    setMcpError('');
+    let servers: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(mcpJson);
+      servers = (parsed?.mcpServers ?? parsed) as Record<string, unknown>;
+    } catch {
+      setMcpError(isSpanish ? 'JSON inválido.' : 'Invalid JSON.');
+      return;
+    }
+    setMcpSaving(true);
+    try {
+      const r = await platform.saveMcpConfig(servers as any);
+      setMcpTools(r.tools ?? []);
+      if (r.failed?.length) {
+        setMcpError((isSpanish ? 'Falló: ' : 'Failed: ') + r.failed.map((f) => `${f.name} (${f.error})`).join(', '));
+      }
+    } catch (error: any) {
+      setMcpError(error?.message ?? 'Error');
+    } finally {
+      setMcpSaving(false);
+    }
+  }
+
   async function loadConfig() {
     try {
       const c = await platform.getConfig();
@@ -71,6 +101,8 @@ export default function Settings() {
   useEffect(() => {
     loadConfig();
     platform.getProviders().then((r) => setProviders(r.providers ?? [])).catch(() => {});
+    platform.getMcpConfig().then((r) => setMcpJson(JSON.stringify({ mcpServers: r.mcpServers ?? {} }, null, 2))).catch(() => {});
+    platform.getMcpStatus().then((s) => setMcpTools((s.tools ?? []).map((t) => ({ name: t.name, server: t.server })))).catch(() => {});
   }, []);
 
   const currentProviderDef = providers.find((p) => p.id === selectedProvider);
@@ -293,6 +325,22 @@ export default function Settings() {
           </p>
         </SettingsSection>
 
+        {/* Herramientas MCP (externas) */}
+        <SettingsSection icon={<Wrench size={18} />} title={isSpanish ? 'Herramientas (MCP)' : 'Tools (MCP)'}>
+          <SettingsGroup>
+            <SettingsItem
+              title={isSpanish ? 'Servidores MCP' : 'MCP servers'}
+              value={mcpTools.length ? `${mcpTools.length} ${isSpanish ? 'conectadas' : 'connected'}` : (isSpanish ? 'Ninguno' : 'None')}
+              onClick={() => openModal('mcp')}
+            />
+          </SettingsGroup>
+          <p className="text-zinc-600 text-xs px-2 mt-2 leading-relaxed">
+            {isSpanish
+              ? 'Conectá herramientas externas (GitHub, bases de datos, buscadores…) por MCP, como en OpenCode.'
+              : 'Connect external tools (GitHub, databases, search…) via MCP, like OpenCode.'}
+          </p>
+        </SettingsSection>
+
         {/* Preferences */}
         <SettingsSection icon={<Info size={18} />} title={t.preferences}>
           <SettingsGroup>
@@ -330,6 +378,7 @@ export default function Settings() {
                 {activeModal === 'language' && t.appLanguage}
                 {activeModal === 'feedback' && 'Send Feedback'}
                 {activeModal === 'provider' && (isSpanish ? 'Proveedor de IA' : 'AI Provider')}
+                {activeModal === 'mcp' && (isSpanish ? 'Herramientas (MCP)' : 'Tools (MCP)')}
               </h2>
               <button onClick={closeModal} className="p-2 bg-zinc-800 rounded-full hover:bg-zinc-700 text-zinc-400">
                 <X size={20} />
@@ -473,6 +522,54 @@ export default function Settings() {
                     </button>
                   </>
                 )}
+              </div>
+            )}
+
+            {/* MCP modal: editor de config + tools conectadas */}
+            {activeModal === 'mcp' && (
+              <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
+                <p className="text-zinc-400 text-[13px] leading-relaxed">
+                  {isSpanish
+                    ? 'Pegá la config de tus servidores MCP (formato Claude Desktop) y tocá Guardar. Ejemplo:'
+                    : 'Paste your MCP servers config (Claude Desktop format) and tap Save. Example:'}
+                </p>
+                <pre className="text-[10.5px] text-zinc-500 bg-zinc-950 border border-zinc-800 rounded-xl p-3 overflow-x-auto leading-snug">{`{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"]
+    }
+  }
+}`}</pre>
+                <textarea
+                  value={mcpJson}
+                  onChange={(e) => setMcpJson(e.target.value)}
+                  spellCheck={false}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  className="w-full h-44 bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-[12px] font-mono text-zinc-200 resize-none focus:outline-none focus:border-[#FF7A1A]/50"
+                />
+                {mcpError && <p className="text-red-400 text-[12px] leading-snug">{mcpError}</p>}
+                {mcpTools.length > 0 && (
+                  <div className="space-y-1.5">
+                    <p className="text-emerald-400 text-[12px] font-semibold">
+                      {mcpTools.length} {isSpanish ? 'herramientas conectadas:' : 'tools connected:'}
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {mcpTools.map((tl) => (
+                        <span key={tl.name} className="text-[10.5px] font-mono px-2 py-1 rounded-lg bg-zinc-800 text-zinc-300">{tl.name}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  disabled={mcpSaving}
+                  onClick={handleSaveMcp}
+                  className="w-full bg-[#FF7A1A] text-[#1A0E02] font-semibold py-3 rounded-xl hover:brightness-110 disabled:opacity-50 transition-colors"
+                >
+                  {mcpSaving ? (isSpanish ? 'Conectando…' : 'Connecting…') : (isSpanish ? 'Guardar y conectar' : 'Save & connect')}
+                </button>
               </div>
             )}
 

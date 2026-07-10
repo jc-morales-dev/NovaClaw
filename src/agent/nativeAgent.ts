@@ -161,9 +161,21 @@ function buildBaseMessages(session: AgentSession): AgentMessage[] {
 const SUMMARIZE_THRESHOLD = 44; // si el historial supera esto, resumimos
 const SUMMARIZE_KEEP_RECENT = 16; // últimas entradas que se dejan verbatim
 
+// En modo PLAN, estas tools quedan bloqueadas (el agente solo lee/analiza).
+const PLAN_BLOCKED_TOOLS = new Set(['file_write', 'file_edit', 'workspace_mkdir', 'terminal_run', 'subagent_run']);
+function isPlanBlocked(name: string): boolean {
+  return PLAN_BLOCKED_TOOLS.has(name) || McpManager.isMcpTool(name);
+}
+
+const PLAN_MODE_ADDENDUM = `
+
+# PLAN MODE (ACTIVE)
+You are in PLAN mode. Editing files, running commands, installing anything, sub-agents and MCP tools are BLOCKED. Only READ and analyze (file_read, file_grep, file_list, file_search, web_fetch, diagnostics, image_view). Investigate what's needed, then produce a clear, concrete step-by-step PLAN for the user to review — numbered steps, files to touch, commands to run. Do NOT try to apply it. The user will switch to Build mode to execute.`;
+
 export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
   const maxIterations = options.maxIterations ?? 32;
   const callModel = options.callModel ?? callModelWithTools;
+  let turnMode: 'plan' | 'build' = 'build';
 
   function dotName(nativeName: string): string {
     return TOOL_NAME_TO_DOT[nativeName] ?? nativeName;
@@ -245,6 +257,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     } catch {
       // sin memoria de proyecto — seguimos con el prompt base
     }
+    if (turnMode === 'plan') system += PLAN_MODE_ADDENDUM;
     return system;
   }
 
@@ -396,6 +409,22 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     while (i < batch.length) {
       if (signal?.aborted) return 'aborted';
       const tc = batch[i];
+
+      // Modo PLAN: bloquear cualquier tool que mute o ejecute (solo lectura/análisis).
+      if (turnMode === 'plan' && isPlanBlocked(tc.name)) {
+        const blocked: ToolExecutionResult = {
+          name: dotName(tc.name),
+          command: JSON.stringify(tc.args ?? {}).slice(0, 120),
+          status: 'error',
+          output: 'PLAN MODE: editar archivos, ejecutar comandos, sub-agentes y MCP están bloqueados. Terminá el plan de pasos y el usuario lo aplica en modo Build.',
+          cwd: session.cwd,
+        };
+        messages.push({ role: 'tool', toolCallId: tc.id, toolName: tc.name, result: blocked.output });
+        session.history.push({ role: 'system', content: toolResultToHistory(blocked) });
+        events.push({ type: 'toolExecution', toolExecution: blocked });
+        i += 1;
+        continue;
+      }
 
       // Plan de tareas visible: no va al executor; emite un evento para la UI
       // y confirma al modelo. El agente lo usa para planear y trackear pasos.
@@ -551,7 +580,9 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     message: string,
     onEvent?: AgentEventSink,
     signal?: AbortSignal,
+    mode?: 'plan' | 'build',
   ): Promise<RuntimeResult> {
+    turnMode = mode === 'plan' ? 'plan' : 'build';
     session.history.push({ role: 'user', content: message });
     // Conversaciones largas: resumir el historial con el modelo antes de armar
     // el contexto, para que el turno nunca reviente la ventana y no se pierda el hilo.

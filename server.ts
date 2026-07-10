@@ -89,19 +89,26 @@ const MCP_CONFIG_PATH = process.env.NOVACLAW_MCP_CONFIG
   || path.join(path.dirname(NOVACLAW_CONFIG_PATH), 'novaclaw.mcp.json');
 const mcpManager = new McpManager();
 
-async function connectMcpServers(): Promise<void> {
+function readMcpConfig(): Record<string, McpServerConfig> {
   try {
-    if (!fs.existsSync(MCP_CONFIG_PATH)) return;
+    if (!fs.existsSync(MCP_CONFIG_PATH)) return {};
     const raw = JSON.parse(fs.readFileSync(MCP_CONFIG_PATH, 'utf8'));
-    const servers: Record<string, McpServerConfig> = raw?.mcpServers ?? raw ?? {};
-    const { connected, failed } = await mcpManager.connectAll(servers);
-    if (connected.length) console.log(`MCP conectado: ${connected.join(', ')}`);
-    for (const f of failed) console.error(`MCP falló (${f.name}): ${f.error}`);
+    return (raw?.mcpServers ?? raw ?? {}) as Record<string, McpServerConfig>;
   } catch (error: any) {
-    console.error('No se pudo leer novaclaw.mcp.json:', error?.message);
+    console.error('novaclaw.mcp.json inválido:', error?.message);
+    return {};
   }
 }
-void connectMcpServers();
+
+/** (Re)conecta todos los servidores MCP del config. Devuelve el resultado. */
+async function reconnectMcp(): Promise<{ connected: string[]; failed: Array<{ name: string; error: string }> }> {
+  mcpManager.closeAll();
+  const result = await mcpManager.connectAll(readMcpConfig());
+  if (result.connected.length) console.log(`MCP conectado: ${result.connected.join(', ')}`);
+  for (const f of result.failed) console.error(`MCP falló (${f.name}): ${f.error}`);
+  return result;
+}
+void reconnectMcp();
 
 type ChatRole = 'user' | 'assistant' | 'system';
 
@@ -777,10 +784,20 @@ function formatDirectoryEntries(targetPath: string): string {
 }
 
 // Runtime local heurístico (sin API key): protocolo simple de respaldo.
+// Journal de cambios de archivo para "Deshacer" (los últimos N escritos/editados).
+type FileChange = { path: string; before: string | null; existedBefore: boolean };
+const changeJournal: FileChange[] = [];
+const sharedExecutor = createLocalToolExecutor({
+  onFileChange: (c) => {
+    changeJournal.push(c);
+    if (changeJournal.length > 200) changeJournal.shift();
+  },
+});
+
 const localAgentRuntime = createAgentRuntime({
   workspaceRoot: DEFAULT_CWD,
   callModel: callZenAgent,
-  executeToolCall: createLocalToolExecutor(),
+  executeToolCall: sharedExecutor,
   maxIterations: 18,
 });
 
@@ -789,7 +806,7 @@ const localAgentRuntime = createAgentRuntime({
 const nativeAgentRuntime = createNativeAgentRuntime({
   workspaceRoot: DEFAULT_CWD,
   getConfig: () => ({ providerId: zenConfig.provider, apiKey: zenConfig.apiKey, model: zenConfig.model }),
-  executeToolCall: createLocalToolExecutor(),
+  executeToolCall: sharedExecutor,
   getMcpTools: () => mcpManager.listTools(),
   callMcpTool: (name, args) => mcpManager.call(name, args),
   onRemote: (label) => {
@@ -913,6 +930,41 @@ async function startServer() {
     });
   });
 
+  // Config de servidores MCP (para la UI de Ajustes).
+  app.get('/api/mcp/config', (_req, res) => {
+    res.json({ mcpServers: readMcpConfig() });
+  });
+
+  app.post('/api/mcp/config', async (req, res) => {
+    const servers = (req.body?.mcpServers ?? {}) as Record<string, McpServerConfig>;
+    try {
+      fs.writeFileSync(MCP_CONFIG_PATH, JSON.stringify({ mcpServers: servers }, null, 2), 'utf8');
+      const result = await reconnectMcp();
+      res.json({
+        ...result,
+        tools: mcpManager.listTools().map((t) => ({ name: t.name, server: t.server })),
+      });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message ?? 'No se pudo guardar la config MCP.' });
+    }
+  });
+
+  // Deshacer: revierte el último archivo que el agente escribió/editó.
+  app.post('/api/undo', (_req, res) => {
+    const change = changeJournal.pop();
+    if (!change) return res.json({ ok: false, message: 'No hay cambios para deshacer.' });
+    try {
+      if (change.existedBefore && change.before !== null) {
+        fs.writeFileSync(change.path, change.before, 'utf8');
+      } else {
+        try { fs.unlinkSync(change.path); } catch { /* ya no existe */ }
+      }
+      res.json({ ok: true, path: change.path, remaining: changeJournal.length });
+    } catch (error: any) {
+      res.status(500).json({ ok: false, message: error?.message ?? 'No se pudo deshacer.' });
+    }
+  });
+
   app.get('/api/runtime/status', async (_req, res) => {
     if (!opencodeInstallProcess && !opencodeRuntimeProcess) {
       await refreshOpenCodeAvailability();
@@ -1004,7 +1056,7 @@ async function startServer() {
   }
 
   app.post('/api/chat/stream', async (req, res) => {
-    const { message, sessionId = AGENT_SESSION_ID } = req.body;
+    const { message, sessionId = AGENT_SESSION_ID, mode } = req.body;
     if (!message?.trim()) {
       return res.status(400).json({ error: 'Message is required' });
     }
@@ -1020,7 +1072,7 @@ async function startServer() {
     const send = openSse(res);
     try {
       const session = getOrCreateSession(sessionId);
-      const result = await pickRuntime().runUserTurn(session, message, (ev) => send('agent', ev), controller.signal);
+      const result = await pickRuntime().runUserTurn(session, message, (ev) => send('agent', ev), controller.signal, mode === 'plan' ? 'plan' : 'build');
       finished = true;
       runtimeState.terminal.cwd = session.cwd;
       saveSessionsToDisk();
