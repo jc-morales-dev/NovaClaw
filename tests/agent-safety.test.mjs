@@ -133,6 +133,64 @@ assert.match(outsideWorkspaceWrite.summary, /file\.write/i);
   assert.equal(mustApprove('cat archivo.txt'), false, 'cat normal');
 }
 
+// ── Modelo ALLOWLIST (default-deny): bypasses que la blacklist dejaba pasar ──
+{
+  const mustApprove = (command) =>
+    classifyToolCall({ tool: 'terminal.run', arguments: { command } }, { cwd: workspaceRoot, workspaceRoot }).requiresApproval;
+
+  // Bypasses clásicos de blacklist: binarios no listados → SIEMPRE aprobación.
+  assert.equal(mustApprove('busybox rm -rf /sdcard/DCIM'), true, 'busybox rm');
+  assert.equal(mustApprove('cp /dev/null importante.txt'), true, 'cp /dev/null');
+  assert.equal(mustApprove('install -m 755 evil /usr/bin/ls'), true, 'install');
+  assert.equal(mustApprove('ln -sf /sdcard enlace'), true, 'ln');
+  assert.equal(mustApprove('tar --overwrite -xf x.tar'), true, 'tar overwrite');
+  assert.equal(mustApprove('npx cowsay hola'), true, 'npx ejecuta paquetes remotos');
+  assert.equal(mustApprove('toybox rm -rf x'), true, 'toybox');
+
+  // Encadenados: si CUALQUIER segmento no es seguro, todo pide aprobación.
+  assert.equal(mustApprove('ls && rm -rf tmp'), true, 'segundo segmento inseguro (&&)');
+  assert.equal(mustApprove('cat x.txt; busybox rm y'), true, 'segundo segmento inseguro (;)');
+  assert.equal(mustApprove('cat script.sh | sh'), true, 'pipe a shell');
+  assert.equal(mustApprove('echo hola | tee /sdcard/x'), true, 'pipe a tee');
+
+  // Sustitución de comandos y variables de entorno peligrosas.
+  assert.equal(mustApprove('echo $(rm -rf x)'), true, 'sustitución $( )');
+  assert.equal(mustApprove('echo `rm -rf x`'), true, 'backticks');
+  assert.equal(mustApprove('LD_PRELOAD=/data/evil.so ls'), true, 'LD_PRELOAD');
+  assert.equal(mustApprove('PATH=/tmp/evil:$PATH cat x'), true, 'PATH override');
+
+  // Redirecciones de escritura (salvo /dev/null) piden aprobación…
+  assert.equal(mustApprove('echo data > salida.txt'), true, 'redirección a archivo');
+  assert.equal(mustApprove('ls >> log.txt'), true, 'append a archivo');
+  // …pero las inofensivas de silenciar output no.
+  assert.equal(mustApprove('ls 2>/dev/null'), false, '2>/dev/null es inofensivo');
+  assert.equal(mustApprove('node index.js 2>&1'), false, '2>&1 es inofensivo');
+
+  // git: lectura libre, mutación con aprobación.
+  assert.equal(mustApprove('git status'), false, 'git status');
+  assert.equal(mustApprove('git log --oneline -5'), false, 'git log');
+  assert.equal(mustApprove('git diff HEAD~1'), false, 'git diff');
+  assert.equal(mustApprove('git push origin main'), true, 'git push');
+  assert.equal(mustApprove('git checkout -- .'), true, 'git checkout');
+  assert.equal(mustApprove('git clean -fd'), true, 'git clean');
+
+  // Env vars normales no bloquean lo legítimo.
+  assert.equal(mustApprove('NODE_ENV=test npm test'), false, 'NODE_ENV=test npm test');
+  assert.equal(mustApprove('npm run build'), false, 'npm run script del workspace');
+
+  // Rutas absolutas a binarios → no verificable → aprobación.
+  assert.equal(mustApprove('/data/local/tmp/evil'), true, 'binario con ruta absoluta');
+  assert.equal(mustApprove('./script-desconocido.sh'), true, 'binario con ruta relativa');
+
+  // Pipelines de lectura legítimos siguen libres.
+  assert.equal(mustApprove('cat server.ts | grep import | wc -l'), false, 'pipeline de lectura');
+  assert.equal(mustApprove('grep -rn "TODO" src'), false, 'grep recursivo');
+  assert.equal(mustApprove('find . -name "*.ts" -type f'), false, 'find de lectura');
+  assert.equal(mustApprove('pm list packages'), false, 'pm list (lectura)');
+  assert.equal(mustApprove('settings get global adb_enabled'), false, 'settings get (lectura)');
+  assert.equal(mustApprove('settings put global adb_enabled 0'), true, 'settings put (mutación)');
+}
+
 // ── Guards de tools: archivo protegido (M1) + SSRF (M1) ──────────────────────
 {
   const execute = createLocalToolExecutor();
