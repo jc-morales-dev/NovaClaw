@@ -6,6 +6,17 @@ import { promisify } from 'node:util';
 
 import type { ToolCallLike, ToolExecutionResult } from './types';
 import { runDiagnostics } from './diagnostics';
+import {
+  MAX_IMAGE_BYTES,
+  MAX_READ_BYTES,
+  MAX_READ_LINES,
+  applyStringEdit,
+  formatWithLineNumbers,
+  htmlToReadableText,
+  imageMediaTypeFor,
+  isBlockedFetchHost,
+  truncateFetchBody,
+} from './toolShared';
 
 const exec = promisify(execCallback);
 
@@ -32,42 +43,12 @@ function isProtectedPath(p: string): boolean {
   return base.endsWith('.jks') || base.endsWith('.keystore');
 }
 
-// SSRF guard: web.fetch no debe alcanzar loopback ni redes internas (sus propios
-// servidores 127.0.0.1:8088/8099, la LAN, o metadata de nube 169.254.x).
-function isBlockedFetchHost(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (h === 'localhost' || h.endsWith('.localhost')) return true;
-  if (h === '0.0.0.0' || h === '::1' || h === '::') return true;
-  if (/^127\./.test(h)) return true;
-  if (/^10\./.test(h)) return true;
-  if (/^192\.168\./.test(h)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
-  if (/^169\.254\./.test(h)) return true;
-  return /^fe80:/i.test(h) || /^fc/i.test(h) || /^fd/i.test(h);
-}
-
-/**
- * Formatea el contenido de un archivo con números de línea (estilo `cat -n`),
- * respetando offset/limit (1-based) para leer ventanas de archivos grandes.
- * Así el modelo puede referenciar líneas exactas al editar.
- */
-// Extensiones de imagen soportadas por los modelos de vision y su media type.
-const IMAGE_MEDIA_TYPES: Record<string, string> = {
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.png': 'image/png',
-  '.webp': 'image/webp',
-  '.gif': 'image/gif',
-};
-
 /** Lee un archivo de imagen y lo devuelve como base64 + media type para vision. */
 async function loadImageAsBase64(imagePath: string): Promise<{ mediaType: string; data: string }> {
-  const ext = path.extname(imagePath).toLowerCase();
-  const mediaType = IMAGE_MEDIA_TYPES[ext];
+  const mediaType = imageMediaTypeFor(imagePath);
   if (!mediaType) {
-    throw new Error(`Unsupported image type "${ext}". Use jpg, png, webp or gif.`);
+    throw new Error(`Unsupported image type "${path.extname(imagePath).toLowerCase()}". Use jpg, png, webp or gif.`);
   }
-  const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB
   const stat = await fs.stat(imagePath);
   if (!stat.isFile()) throw new Error(`Not a file: ${imagePath}`);
   if (stat.size > MAX_IMAGE_BYTES) {
@@ -75,42 +56,6 @@ async function loadImageAsBase64(imagePath: string): Promise<{ mediaType: string
   }
   const buf = await fs.readFile(imagePath);
   return { mediaType, data: buf.toString('base64') };
-}
-
-function formatWithLineNumbers(
-  content: string,
-  args: Record<string, any>,
-  maxLines: number,
-  maxBytes: number,
-): string {
-  const bounded = content.length > maxBytes ? content.slice(0, maxBytes) : content;
-  const lines = bounded.split('\n');
-  const totalLines = lines.length;
-
-  const offset = Math.max(1, Math.floor(Number(args.offset)) || 1);
-  const hasLimit = args.limit !== undefined && args.limit !== null;
-  const limit = hasLimit ? Math.max(1, Math.floor(Number(args.limit))) : maxLines;
-
-  const startIdx = offset - 1;
-  const endIdx = Math.min(startIdx + limit, totalLines);
-  const slice = lines.slice(startIdx, endIdx);
-
-  const width = String(endIdx).length;
-  const numbered = slice
-    .map((line, i) => `${String(offset + i).padStart(width, ' ')}\t${line}`)
-    .join('\n');
-
-  const notes: string[] = [];
-  if (offset > totalLines) {
-    return `[file has ${totalLines} lines; offset ${offset} is past the end]`;
-  }
-  if (endIdx < totalLines) {
-    notes.push(`[... ${totalLines - endIdx} more lines below; use offset=${endIdx + 1} to continue ...]`);
-  }
-  if (content.length > maxBytes) {
-    notes.push(`[file truncated at ${maxBytes} bytes]`);
-  }
-  return notes.length ? `${numbered}\n${notes.join('\n')}` : numbered;
 }
 
 // Puente con el servidor de capacidades nativas (Kotlin) — cámara/GPS/contactos.
@@ -313,8 +258,6 @@ export function createLocalToolExecutor(
           cwd: context.cwd,
         };
       }
-      const MAX_READ_BYTES = 256 * 1024; // 256 KB hard cap to protect the agent context window.
-      const MAX_LINES = 2000; // límite de líneas por lectura sin rango explícito
       const stat = await fs.stat(targetPath);
       if (!stat.isFile()) {
         return {
@@ -327,7 +270,7 @@ export function createLocalToolExecutor(
       }
 
       const fullContent = await fs.readFile(targetPath, 'utf8');
-      const output = formatWithLineNumbers(fullContent, call.arguments, MAX_LINES, MAX_READ_BYTES);
+      const output = formatWithLineNumbers(fullContent, call.arguments, MAX_READ_LINES, MAX_READ_BYTES);
 
       return {
         name: 'file.read',
@@ -385,39 +328,24 @@ export function createLocalToolExecutor(
         };
       }
 
-      const occurrences = content.split(oldString).length - 1;
-      if (occurrences === 0) {
+      const edit = applyStringEdit(content, oldString, newString, replaceAll);
+      if (!edit.ok) {
         return {
           name: 'file.edit',
           command: targetPath,
           status: 'error',
-          output:
-            'old_string was NOT found in the file. It must match exactly, including whitespace and indentation. Read the file again and copy the exact snippet.',
+          output: edit.error,
           cwd: context.cwd,
         };
       }
-      if (occurrences > 1 && !replaceAll) {
-        return {
-          name: 'file.edit',
-          command: targetPath,
-          status: 'error',
-          output: `old_string appears ${occurrences} times in the file. Include more surrounding lines to make it unique, or set replace_all=true to replace every occurrence.`,
-          cwd: context.cwd,
-        };
-      }
-
-      const updated = replaceAll
-        ? content.split(oldString).join(newString)
-        : content.replace(oldString, newString);
       opts.onFileChange?.({ path: targetPath, before: content, existedBefore: true });
-      await fs.writeFile(targetPath, updated, 'utf8');
+      await fs.writeFile(targetPath, edit.updated, 'utf8');
 
-      const replacedCount = replaceAll ? occurrences : 1;
       return {
         name: 'file.edit',
         command: targetPath,
         status: 'success',
-        output: `Edited ${targetPath}: replaced ${replacedCount} occurrence${replacedCount === 1 ? '' : 's'}.`,
+        output: `Edited ${targetPath}: replaced ${edit.replacedCount} occurrence${edit.replacedCount === 1 ? '' : 's'}.`,
         cwd: context.cwd,
       };
     }
@@ -555,23 +483,9 @@ export function createLocalToolExecutor(
         const contentType = res.headers.get('content-type') ?? '';
         let body = await res.text();
         if (/text\/html/i.test(contentType)) {
-          // Reducir HTML a texto legible para no quemar contexto.
-          body = body
-            .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-            .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-            .replace(/<[^>]+>/g, ' ')
-            .replace(/&nbsp;/g, ' ')
-            .replace(/&amp;/g, '&')
-            .replace(/&lt;/g, '<')
-            .replace(/&gt;/g, '>')
-            .replace(/[ \t]+/g, ' ')
-            .replace(/\n\s*\n\s*\n+/g, '\n\n')
-            .trim();
+          body = htmlToReadableText(body);
         }
-        const MAX_CHARS = 80 * 1024;
-        if (body.length > MAX_CHARS) {
-          body = `${body.slice(0, MAX_CHARS)}\n\n[... truncated, response was ${body.length} chars ...]`;
-        }
+        body = truncateFetchBody(body);
         return {
           name: 'web.fetch',
           command: url,

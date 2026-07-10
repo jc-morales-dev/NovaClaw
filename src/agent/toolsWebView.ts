@@ -10,6 +10,16 @@
  */
 
 import type { ToolCallLike, ToolExecutionResult } from './types';
+import {
+  MAX_READ_BYTES,
+  MAX_READ_LINES,
+  applyStringEdit,
+  formatWithLineNumbers,
+  htmlToReadableText,
+  imageMediaTypeFor,
+  isBlockedFetchHost,
+  truncateFetchBody,
+} from './toolShared';
 
 const DEFAULT_CWD = '/data/data/com.novaclaw.app/files/workspace';
 
@@ -83,32 +93,6 @@ async function shellReadFile(path: string): Promise<string> {
  return output;
 }
 
-/** Formatea contenido con números de línea (cat -n) + offset/limit 1-based. */
-function formatFileWithLineNumbers(
- content: string,
- args: Record<string, any>,
- maxLines: number,
- maxBytes: number,
-): string {
- const bounded = content.length > maxBytes ? content.slice(0, maxBytes) : content;
- const lines = bounded.split('\n');
- const totalLines = lines.length;
- const offset = Math.max(1, Math.floor(Number(args.offset)) || 1);
- const hasLimit = args.limit !== undefined && args.limit !== null;
- const limit = hasLimit ? Math.max(1, Math.floor(Number(args.limit))) : maxLines;
- if (offset > totalLines) return `[file has ${totalLines} lines; offset ${offset} is past the end]`;
- const startIdx = offset - 1;
- const endIdx = Math.min(startIdx + limit, totalLines);
- const width = String(endIdx).length;
- const numbered = lines.slice(startIdx, endIdx)
- .map((line, i) => `${String(offset + i).padStart(width, ' ')}\t${line}`)
- .join('\n');
- const notes: string[] = [];
- if (endIdx < totalLines) notes.push(`[... ${totalLines - endIdx} more lines below; use offset=${endIdx + 1} to continue ...]`);
- if (content.length > maxBytes) notes.push(`[file truncated at ${maxBytes} bytes]`);
- return notes.length ? `${numbered}\n${notes.join('\n')}` : numbered;
-}
-
 /** Resuelve rutas relativas/~ sin Node.js path. */
 function resolvePath(inputPath: string, cwd: string): string {
  if (!inputPath) return cwd;
@@ -170,11 +154,9 @@ export function createWebViewToolExecutor() {
  // ── file.read ────────────────────────────────────────────────────────────
  if (call.tool === 'file.read') {
  const targetPath = resolvePath(String(call.arguments.path ?? ''), cwd);
- const MAX_CHARS = 256 * 1024;
- const MAX_LINES = 2000;
  try {
  const raw = await shellReadFile(targetPath);
- const output = formatFileWithLineNumbers(raw, call.arguments, MAX_LINES, MAX_CHARS);
+ const output = formatWithLineNumbers(raw, call.arguments, MAX_READ_LINES, MAX_READ_BYTES);
  return { name: 'file.read', command: targetPath, status: 'success', output, cwd };
  } catch (err: any) {
  return { name: 'file.read', command: targetPath, status: 'error', output: err.message, cwd };
@@ -210,17 +192,12 @@ export function createWebViewToolExecutor() {
  }
  try {
  const content = await shellReadFile(targetPath);
- const occurrences = content.split(oldString).length - 1;
- if (occurrences === 0) {
- return { name: 'file.edit', command: targetPath, status: 'error', output: 'old_string was NOT found in the file. It must match exactly (whitespace included). Read the file again and copy the exact snippet.', cwd };
+ const edit = applyStringEdit(content, oldString, newString, replaceAll);
+ if (!edit.ok) {
+ return { name: 'file.edit', command: targetPath, status: 'error', output: edit.error, cwd };
  }
- if (occurrences > 1 && !replaceAll) {
- return { name: 'file.edit', command: targetPath, status: 'error', output: `old_string appears ${occurrences} times. Add surrounding lines to make it unique, or set replace_all=true.`, cwd };
- }
- const updated = replaceAll ? content.split(oldString).join(newString) : content.replace(oldString, newString);
- await shellWriteFile(targetPath, updated);
- const n = replaceAll ? occurrences : 1;
- return { name: 'file.edit', command: targetPath, status: 'success', output: `✓ Editado ${targetPath}: ${n} reemplazo${n === 1 ? '' : 's'}.`, cwd };
+ await shellWriteFile(targetPath, edit.updated);
+ return { name: 'file.edit', command: targetPath, status: 'success', output: `Edited ${targetPath}: replaced ${edit.replacedCount} occurrence${edit.replacedCount === 1 ? '' : 's'}.`, cwd };
  } catch (err: any) {
  return { name: 'file.edit', command: targetPath, status: 'error', output: err.message, cwd };
  }
@@ -259,17 +236,20 @@ export function createWebViewToolExecutor() {
  if (!/^https?:\/\//i.test(url)) {
  return { name: 'web.fetch', command: url, status: 'error', output: 'Only http(s) URLs are supported.', cwd };
  }
+ // SSRF guard (mismo criterio que tools.ts): nada de loopback ni redes privadas.
+ let parsedHost = '';
+ try { parsedHost = new URL(url).hostname; } catch { parsedHost = ''; }
+ if (!parsedHost || isBlockedFetchHost(parsedHost)) {
+ return { name: 'web.fetch', command: url, status: 'error', output: 'Blocked: web_fetch cannot reach localhost or private/internal network addresses (SSRF protection).', cwd };
+ }
  try {
  const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
  let body = await res.text();
- const MAX_CHARS = 80 * 1024;
- body = body
- .replace(/<script[\s\S]*?<\/script>/gi, ' ')
- .replace(/<style[\s\S]*?<\/style>/gi, ' ')
- .replace(/<[^>]+>/g, ' ')
- .replace(/[ \t]+/g, ' ')
- .trim();
- if (body.length > MAX_CHARS) body = `${body.slice(0, MAX_CHARS)}\n[... truncado ...]`;
+ const contentType = res.headers.get('content-type') ?? '';
+ if (/text\/html/i.test(contentType) || /<html/i.test(body.slice(0, 500))) {
+ body = htmlToReadableText(body);
+ }
+ body = truncateFetchBody(body);
  return { name: 'web.fetch', command: url, status: res.ok ? 'success' : 'error', output: body || `HTTP ${res.status}`, cwd };
  } catch (err: any) {
  return { name: 'web.fetch', command: url, status: 'error', output: `Fetch falló (CORS/red): ${err?.message ?? err}`, cwd };
@@ -336,10 +316,9 @@ export function createWebViewToolExecutor() {
  // ── image.view ─────────────────────────────────────────────────────────────
  if (call.tool === 'image.view') {
  const targetPath = resolvePath(String(call.arguments.path ?? ''), cwd);
- const ext = targetPath.slice(targetPath.lastIndexOf('.')).toLowerCase();
- const mediaType = ({ '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif' } as Record<string, string>)[ext];
+ const mediaType = imageMediaTypeFor(targetPath);
  if (!mediaType) {
- return { name: 'image.view', command: targetPath, status: 'error', output: `Unsupported image type "${ext}". Use jpg, png, webp or gif.`, cwd };
+ return { name: 'image.view', command: targetPath, status: 'error', output: `Unsupported image type "${targetPath.slice(targetPath.lastIndexOf('.')).toLowerCase()}". Use jpg, png, webp or gif.`, cwd };
  }
  try {
  const safePath = sanitizeShellPath(targetPath);
