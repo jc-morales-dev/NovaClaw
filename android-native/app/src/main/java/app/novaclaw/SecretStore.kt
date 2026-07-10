@@ -4,6 +4,7 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import org.json.JSONObject
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -11,17 +12,17 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Guarda la API key del usuario CIFRADA con el Android Keystore (AES-256/GCM,
- * clave respaldada por hardware que nunca sale del TEE). El texto cifrado se
- * guarda en SharedPreferences; sin la clave del Keystore no se puede descifrar.
+ * Guarda las API keys del usuario CIFRADAS con el Android Keystore (AES-256/GCM,
+ * clave respaldada por hardware que nunca sale del TEE).
  *
- * Reemplaza el guardado en texto plano de novaclaw.config.json. RuntimeManager
- * descifra la key al arrancar y se la pasa al agente por env (en memoria), así
- * el disco nunca tiene la key legible.
+ * Modelo: UNA key POR PROVEEDOR. Se guarda un mapa {provider: key} como un solo
+ * blob cifrado. Así el usuario puede tener la de OpenCode, la de OpenRouter, etc.,
+ * todas a la vez, y al cambiar de proveedor se usa la que corresponde.
  */
 object SecretStore {
     private const val PREFS = "novaclaw_secure"
-    private const val PREF_KEY = "api_key_enc"
+    private const val PREF_MAP = "api_keys_enc"     // mapa {provider: key} cifrado
+    private const val PREF_LEGACY = "api_key_enc"   // key única vieja (para migrar)
     private const val KS_ALIAS = "novaclaw_api_key"
     private const val KEYSTORE = "AndroidKeyStore"
     private const val TRANSFORM = "AES/GCM/NoPadding"
@@ -48,46 +49,81 @@ object SecretStore {
         return gen.generateKey()
     }
 
-    /** Cifra y guarda la API key. Vacío = borra. */
-    fun saveApiKey(context: Context, apiKey: String) {
-        if (apiKey.isBlank()) { clear(context); return }
-        try {
-            val cipher = Cipher.getInstance(TRANSFORM)
-            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-            val iv = cipher.iv
-            val ct = cipher.doFinal(apiKey.toByteArray(Charsets.UTF_8))
-            val blob = ByteArray(iv.size + ct.size)
-            System.arraycopy(iv, 0, blob, 0, iv.size)
-            System.arraycopy(ct, 0, blob, iv.size, ct.size)
-            prefs(context).edit()
-                .putString(PREF_KEY, Base64.encodeToString(blob, Base64.NO_WRAP))
-                .apply()
-        } catch (e: Exception) {
-            android.util.Log.e("NovaClaw/Secret", "No se pudo cifrar la key: ${e.message}")
-        }
+    private fun encrypt(plain: String): String? = try {
+        val cipher = Cipher.getInstance(TRANSFORM)
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+        val iv = cipher.iv
+        val ct = cipher.doFinal(plain.toByteArray(Charsets.UTF_8))
+        val blob = ByteArray(iv.size + ct.size)
+        System.arraycopy(iv, 0, blob, 0, iv.size)
+        System.arraycopy(ct, 0, blob, iv.size, ct.size)
+        Base64.encodeToString(blob, Base64.NO_WRAP)
+    } catch (e: Exception) {
+        android.util.Log.e("NovaClaw/Secret", "No se pudo cifrar: ${e.message}"); null
     }
 
-    /** Descifra y devuelve la API key, o null si no hay o falla. */
-    fun getApiKey(context: Context): String? {
-        val b64 = prefs(context).getString(PREF_KEY, null) ?: return null
-        return try {
-            val blob = Base64.decode(b64, Base64.NO_WRAP)
-            if (blob.size <= IV_LEN) return null
+    private fun decrypt(b64: String): String? = try {
+        val blob = Base64.decode(b64, Base64.NO_WRAP)
+        if (blob.size <= IV_LEN) null else {
             val iv = blob.copyOfRange(0, IV_LEN)
             val ct = blob.copyOfRange(IV_LEN, blob.size)
             val cipher = Cipher.getInstance(TRANSFORM)
             cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(TAG_BITS, iv))
             String(cipher.doFinal(ct), Charsets.UTF_8)
-        } catch (e: Exception) {
-            android.util.Log.e("NovaClaw/Secret", "No se pudo descifrar la key: ${e.message}")
-            null
         }
+    } catch (e: Exception) {
+        android.util.Log.e("NovaClaw/Secret", "No se pudo descifrar: ${e.message}"); null
     }
 
-    fun hasApiKey(context: Context): Boolean =
-        !prefs(context).getString(PREF_KEY, null).isNullOrBlank()
+    private fun loadMap(context: Context): JSONObject {
+        val b64 = prefs(context).getString(PREF_MAP, null) ?: return JSONObject()
+        val dec = decrypt(b64) ?: return JSONObject()
+        return try { JSONObject(dec) } catch (_: Exception) { JSONObject() }
+    }
 
-    fun clear(context: Context) {
-        prefs(context).edit().remove(PREF_KEY).apply()
+    private fun storeMap(context: Context, map: JSONObject) {
+        val enc = encrypt(map.toString()) ?: return
+        prefs(context).edit().putString(PREF_MAP, enc).apply()
+    }
+
+    /** Guarda (o borra si vacío) la key de un proveedor. */
+    fun saveApiKey(context: Context, provider: String, key: String) {
+        val map = loadMap(context)
+        if (key.isBlank()) map.remove(provider) else map.put(provider, key)
+        storeMap(context, map)
+    }
+
+    /** Devuelve la key del proveedor, o null si no hay. */
+    fun getApiKey(context: Context, provider: String): String? {
+        val v = loadMap(context).optString(provider, "")
+        return v.ifBlank { null }
+    }
+
+    fun hasApiKey(context: Context, provider: String): Boolean =
+        !getApiKey(context, provider).isNullOrBlank()
+
+    fun clear(context: Context, provider: String) {
+        val map = loadMap(context)
+        map.remove(provider)
+        storeMap(context, map)
+    }
+
+    /** Lista de proveedores que tienen una key guardada. */
+    fun providersWithKeys(context: Context): List<String> =
+        loadMap(context).keys().asSequence().toList()
+
+    /**
+     * Migra la key ÚNICA vieja (esquema previo) al mapa, bajo `provider`. Idempotente.
+     * Devuelve la key migrada o null si no había.
+     */
+    fun migrateLegacy(context: Context, provider: String): String? {
+        val b64 = prefs(context).getString(PREF_LEGACY, null) ?: return null
+        val key = decrypt(b64)
+        prefs(context).edit().remove(PREF_LEGACY).apply()
+        if (!key.isNullOrBlank()) {
+            if (getApiKey(context, provider).isNullOrBlank()) saveApiKey(context, provider, key)
+            return key
+        }
+        return null
     }
 }

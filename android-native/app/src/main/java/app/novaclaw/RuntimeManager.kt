@@ -246,20 +246,19 @@ class RuntimeManager(private val context: Context) {
         )
         configCandidates.firstOrNull { it.exists() }?.let { applyProviderConfig(it, env) }
 
-        // ── API key: SIEMPRE cifrada en el Android Keystore ────────────────────
-        // Si el Keystore ya tiene la key, se usa. Si no pero quedó una en texto
-        // plano (versión vieja o config puesta por USB), se MIGRA al Keystore y se
-        // borra del disco. El agente recibe la key SOLO por env (en memoria).
-        val ksKey = SecretStore.getApiKey(context)
-        if (!ksKey.isNullOrBlank()) {
-            env["ZEN_API_KEY"] = ksKey
-        } else {
-            val plain = env["ZEN_API_KEY"]
-            if (!plain.isNullOrBlank()) {
-                SecretStore.saveApiKey(context, plain)
-                Log.i(TAG, "API key migrada de texto plano al Keystore.")
-            }
+        // ── API key POR PROVEEDOR: cifrada en el Android Keystore (mapa) ────────
+        // Se usa la key del PROVEEDOR ACTUAL. Migraciones: (a) la key única vieja
+        // del Keystore → mapa bajo el provider; (b) una key en texto plano de una
+        // versión anterior o puesta por USB → mapa. El disco nunca guarda la key.
+        val provider = readProviderFromConfig(configCandidates)
+        SecretStore.migrateLegacy(context, provider)
+        val plain = env["ZEN_API_KEY"]
+        if (!plain.isNullOrBlank() && SecretStore.getApiKey(context, provider).isNullOrBlank()) {
+            SecretStore.saveApiKey(context, provider, plain)
+            Log.i(TAG, "API key migrada de texto plano al Keystore (provider=$provider).")
         }
+        val ksKey = SecretStore.getApiKey(context, provider)
+        env["ZEN_API_KEY"] = ksKey ?: ""
         // Nunca dejar la key en texto plano en el/los archivos de config.
         for (f in configCandidates) scrubApiKeyInFile(f)
 
@@ -297,6 +296,18 @@ class RuntimeManager(private val context: Context) {
     fun stopAgent() {
         agentProcess?.destroy()
         agentProcess = null
+    }
+
+    /** Lee el proveedor actual del primer novaclaw.config.json que exista. */
+    private fun readProviderFromConfig(candidates: List<File>): String {
+        for (f in candidates) {
+            if (!f.exists()) continue
+            try {
+                val p = org.json.JSONObject(f.readText()).optString("provider")
+                if (p.isNotBlank()) return p
+            } catch (_: Exception) { /* archivo inválido */ }
+        }
+        return "opencode-zen"
     }
 
     /** Borra la apiKey en texto plano de un novaclaw.config.json (tras migrarla al Keystore). */

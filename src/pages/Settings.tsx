@@ -54,6 +54,8 @@ export default function Settings() {
   const [selectedModel, setSelectedModel] = useState('');
   const [providerSaving, setProviderSaving] = useState(false);
   const [providerSaved, setProviderSaved] = useState(false);
+  // Proveedores que ya tienen una API key guardada (una key por proveedor).
+  const [keyProviders, setKeyProviders] = useState<string[]>([]);
 
   // Conectores del teléfono (permisos reales de Android).
   const [connectors, setConnectors] = useState<ConnectorState>(() => getConnectors());
@@ -103,16 +105,45 @@ export default function Settings() {
     platform.getProviders().then((r) => setProviders(r.providers ?? [])).catch(() => {});
     platform.getMcpConfig().then((r) => setMcpJson(JSON.stringify({ mcpServers: r.mcpServers ?? {} }, null, 2))).catch(() => {});
     platform.getMcpStatus().then((s) => setMcpTools((s.tools ?? []).map((t) => ({ name: t.name, server: t.server })))).catch(() => {});
+    platform.getApiKeyProviders().then(setKeyProviders).catch(() => {});
   }, []);
 
   const currentProviderDef = providers.find((p) => p.id === selectedProvider);
+  const hasKeyForSelected = keyProviders.includes(selectedProvider);
+  const refreshKeyProviders = () => platform.getApiKeyProviders().then(setKeyProviders).catch(() => {});
+
+  // Ver la key guardada: al mostrar, si el campo está vacío, la carga para verla/editarla.
+  async function handleRevealKey() {
+    if (!apiKeyVisible && !apiKeyInput.trim() && hasKeyForSelected) {
+      try {
+        const k = await platform.getStoredApiKey(selectedProvider);
+        if (k) setApiKeyInput(k);
+      } catch { /* sin puente (web) */ }
+    }
+    setApiKeyVisible((v) => !v);
+  }
+
+  async function handleDeleteKey() {
+    try {
+      await platform.deleteApiKey(selectedProvider);
+      setApiKeyInput('');
+      setApiKeyVisible(false);
+      setModels([]);
+      refreshKeyProviders();
+    } catch { /* ignore */ }
+  }
 
   async function handleVerify() {
     setVerifying(true);
     setVerifyError('');
     setModels([]);
     try {
-      const result = await platform.verifyProvider(selectedProvider, apiKeyInput.trim());
+      // Si el campo está vacío pero hay una key guardada del proveedor, usarla.
+      let key = apiKeyInput.trim();
+      if (!key && hasKeyForSelected) {
+        try { key = await platform.getStoredApiKey(selectedProvider); } catch { /* web */ }
+      }
+      const result = await platform.verifyProvider(selectedProvider, key);
       if (!result.ok) {
         setVerifyError(result.error ?? 'No se pudo verificar.');
         return;
@@ -187,6 +218,7 @@ export default function Settings() {
       setSelectedModel(c.model ?? '');
       setProviderSaved(true);
       setApiKeyInput('');
+      refreshKeyProviders();
       setTimeout(() => closeModal(), 1600);
     } catch (err: any) {
       setVerifyError(err?.message ?? (isSpanish ? 'No se pudo guardar.' : 'Failed to save.'));
@@ -414,7 +446,7 @@ export default function Settings() {
                               key={p.id}
                               type="button"
                               disabled={disabled}
-                              onClick={() => { setSelectedProvider(p.id); setModels([]); setVerifyError(''); }}
+                              onClick={() => { setSelectedProvider(p.id); setModels([]); setVerifyError(''); setApiKeyInput(''); setApiKeyVisible(false); }}
                               className={`px-3 py-2.5 rounded-xl text-[13px] font-semibold text-left border transition-colors ${
                                 active
                                   ? 'bg-[#FF7A1A]/12 border-[#FF7A1A] text-orange-100'
@@ -423,7 +455,10 @@ export default function Settings() {
                                     : 'bg-zinc-950 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
                               }`}
                             >
-                              {p.label}
+                              <span className="flex items-center gap-1.5">
+                                {keyProviders.includes(p.id) && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" title="Con key guardada" />}
+                                {p.label}
+                              </span>
                               {disabled && <span className="block text-[10px] text-zinc-600 mt-0.5">{isSpanish ? 'Próximamente' : 'Coming soon'}</span>}
                             </button>
                           );
@@ -436,22 +471,30 @@ export default function Settings() {
 
                     {/* Paso 2: API key + verificar */}
                     <div className="space-y-1.5">
-                      <label className="text-zinc-400 text-xs font-semibold px-1">
-                        {isSpanish ? '2 · API Key' : '2 · API Key'}
-                        {config?.hasApiKey && <span className="text-emerald-500"> · {isSpanish ? 'ya hay una guardada' : 'one already saved'}</span>}
+                      <label className="text-zinc-400 text-xs font-semibold px-1 flex items-center justify-between">
+                        <span>
+                          {isSpanish ? '2 · API Key de ' : '2 · API Key for '}{currentProviderDef?.label ?? selectedProvider}
+                          {hasKeyForSelected && <span className="text-emerald-500"> · {isSpanish ? 'guardada' : 'saved'}</span>}
+                        </span>
+                        {hasKeyForSelected && (
+                          <button type="button" onClick={handleDeleteKey} className="text-red-400/80 hover:text-red-400 text-[11px] font-semibold">
+                            {isSpanish ? 'Borrar' : 'Delete'}
+                          </button>
+                        )}
                       </label>
                       <div className="relative">
                         <input
                           type={apiKeyVisible ? 'text' : 'password'}
                           value={apiKeyInput}
                           onChange={(e) => { setApiKeyInput(e.target.value); setVerifyError(''); }}
-                          placeholder={config?.hasApiKey ? (isSpanish ? 'Dejar vacío para usar la guardada' : 'Leave blank to keep current') : 'sk-...'}
+                          placeholder={hasKeyForSelected ? (isSpanish ? 'Dejar vacío para usar la guardada' : 'Leave blank to keep saved') : 'sk-...'}
                           className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 pr-12 text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-[#FF7A1A] text-[14px] font-mono"
                           autoComplete="off" autoCorrect="off" autoCapitalize="none"
                         />
                         <button
                           type="button"
-                          onClick={() => setApiKeyVisible((v) => !v)}
+                          onClick={handleRevealKey}
+                          title={isSpanish ? 'Ver / ocultar' : 'Show / hide'}
                           className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors p-1"
                         >
                           {apiKeyVisible ? <EyeOff size={18} /> : <Eye size={18} />}
@@ -459,7 +502,7 @@ export default function Settings() {
                       </div>
                       <button
                         type="button"
-                        disabled={verifying || (!apiKeyInput.trim() && !config?.hasApiKey)}
+                        disabled={verifying || (!apiKeyInput.trim() && !hasKeyForSelected)}
                         onClick={handleVerify}
                         className="w-full mt-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-100 font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
                       >

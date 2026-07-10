@@ -70,21 +70,30 @@ class ConnectorBridge(private val activity: Activity) {
         }
     }
 
-    /** Guarda la API key CIFRADA en el Android Keystore (reemplaza el texto plano). */
+    /** Guarda la API key CIFRADA del proveedor en el Android Keystore. */
     @JavascriptInterface
-    fun saveApiKey(key: String) {
-        SecretStore.saveApiKey(activity, key)
+    fun saveApiKey(provider: String, key: String) {
+        SecretStore.saveApiKey(activity, provider, key)
     }
 
-    /** ¿Hay una API key guardada (cifrada) en el Keystore? */
+    /** Devuelve la API key guardada del proveedor (para verla/editarla), o "". */
     @JavascriptInterface
-    fun hasApiKey(): Boolean = SecretStore.hasApiKey(activity)
+    fun getApiKey(provider: String): String = SecretStore.getApiKey(activity, provider) ?: ""
 
-    /** Borra la API key cifrada. */
+    /** ¿Hay una API key guardada para ese proveedor? */
     @JavascriptInterface
-    fun clearApiKey() {
-        SecretStore.clear(activity)
+    fun hasApiKey(provider: String): Boolean = SecretStore.hasApiKey(activity, provider)
+
+    /** Borra la API key del proveedor. */
+    @JavascriptInterface
+    fun clearApiKey(provider: String) {
+        SecretStore.clear(activity, provider)
     }
+
+    /** JSON array de los proveedores que tienen key guardada. */
+    @JavascriptInterface
+    fun apiKeyProviders(): String =
+        org.json.JSONArray(SecretStore.providersWithKeys(activity)).toString()
 
     /** Abre los ajustes de la app para revocar permisos (Android no deja hacerlo por API). */
     @JavascriptInterface

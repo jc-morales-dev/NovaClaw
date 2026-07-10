@@ -81,6 +81,12 @@ interface PlatformAdapter {
  saveConfig(update: ProviderConfigUpdate): Promise<ProviderConfig>;
  getProviders(): Promise<{ providers: ProviderInfo[]; current: string }>;
  verifyProvider(provider: string, apiKey: string): Promise<VerifyResult>;
+ /** Key guardada de un proveedor (para verla/editarla). '' si no hay o no aplica. */
+ getStoredApiKey(provider: string): Promise<string>;
+ /** Borra la key guardada de un proveedor. */
+ deleteApiKey(provider: string): Promise<void>;
+ /** Proveedores que ya tienen una key guardada. */
+ getApiKeyProviders(): Promise<string[]>;
  /** Servidores MCP (herramientas externas). */
  getMcpConfig(): Promise<{ mcpServers: McpServersConfig }>;
  saveMcpConfig(servers: McpServersConfig): Promise<McpSaveResult>;
@@ -234,15 +240,34 @@ const webAdapter: PlatformAdapter = {
  async hasApiKey() { return false; },
  async getConfig() { const r = await apiFetch('/api/config'); return r.json(); },
  async saveConfig(update) {
- const r = await apiFetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(update) });
- if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error ?? 'No se pudo guardar la configuración.'); }
- // Persistir la API key CIFRADA en el Android Keystore (no en texto plano en disco).
- // El POST de arriba la deja en memoria del agente para uso inmediato; el Keystore
- // la conserva para el próximo arranque (RuntimeManager la inyecta por env).
+ // Key POR PROVEEDOR (cifrada en el Keystore). Si el usuario tipeó una key nueva,
+ // se guarda bajo ese proveedor. Si solo cambió de proveedor, se usa la key ya
+ // guardada de ese proveedor. El POST manda la key efectiva para que el agente en
+ // vivo la use; el Keystore la conserva para el próximo arranque.
+ const provider = (update.provider ?? '').trim();
+ const bridge = window.NovaClawNative;
+ let effectiveKey: string | undefined;
  if (typeof update.apiKey === 'string' && update.apiKey.trim()) {
- try { window.NovaClawNative?.saveApiKey?.(update.apiKey.trim()); } catch { /* sin puente nativo (web) */ }
+ effectiveKey = update.apiKey.trim();
+ if (provider) { try { bridge?.saveApiKey?.(provider, effectiveKey); } catch { /* web */ } }
+ } else if (provider && bridge?.getApiKey) {
+ try { effectiveKey = bridge.getApiKey(provider) || undefined; } catch { /* web */ }
  }
+ const payload = effectiveKey !== undefined ? { ...update, apiKey: effectiveKey } : update;
+ const r = await apiFetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+ if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error ?? 'No se pudo guardar la configuración.'); }
  return r.json();
+ },
+ async getStoredApiKey(provider) {
+ try { return window.NovaClawNative?.getApiKey?.(provider) ?? ''; } catch { return ''; }
+ },
+ async deleteApiKey(provider) {
+ try { window.NovaClawNative?.clearApiKey?.(provider); } catch { /* web */ }
+ // Limpia también la key en memoria del agente (por si era el proveedor activo).
+ try { await apiFetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, apiKey: '' }) }); } catch { /* ignore */ }
+ },
+ async getApiKeyProviders() {
+ try { return JSON.parse(window.NovaClawNative?.apiKeyProviders?.() ?? '[]'); } catch { return []; }
  },
  async getProviders() { const r = await apiFetch('/api/providers'); return r.json(); },
  async verifyProvider(provider, apiKey) {
@@ -650,6 +675,9 @@ const capacitorAdapter: PlatformAdapter = {
  const key = apiKey?.trim() ? apiKey.trim() : await resolveApiKey();
  return verifyAndListModels(provider, key);
  },
+ async getStoredApiKey() { return resolveApiKey(); },
+ async deleteApiKey() { await saveApiKeyNative(''); },
+ async getApiKeyProviders() { return (await hasApiKeyNative()) ? [loadProviderConfig().provider] : []; },
  // MCP no aplica en el path Capacitor (el APK usa el webAdapter contra el server).
  async getMcpConfig() { return { mcpServers: {} }; },
  async saveMcpConfig() { return { connected: [], failed: [], tools: [] }; },
