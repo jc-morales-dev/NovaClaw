@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import os from 'node:os';
+import path from 'node:path';
 
 const { createNativeAgentRuntime } = await import('../src/agent/nativeAgent.ts');
 const { createAgentSession } = await import('../src/agent/runtime.ts');
@@ -75,7 +76,7 @@ const noopExecutor = async (call) => ({
   // callModel se usa para el resumen (una llamada extra sin toolCalls) y para el turno.
   let summaryAsked = false;
   const fakeModel = async ({ system, messages }) => {
-    if (/compress an agent conversation/i.test(system ?? '')) {
+    if (/compress a coding-agent conversation/i.test(system ?? '')) {
       summaryAsked = true;
       return { text: 'RESUMEN: el usuario pidió varias cosas; se crearon archivos X e Y.' };
     }
@@ -187,6 +188,58 @@ const noopExecutor = async (call) => ({
     (e) => e.type === 'toolExecution' && /no existe/i.test(e.toolExecution.output || ''),
   );
   assert.ok(hint, 'debe guiar al modelo con las tools válidas');
+}
+
+// ── B3: empuja a verificar tras editar código sin correr diagnostics ─────────
+{
+  const wsRoot = os.tmpdir();
+  const codePath = path.join(wsRoot, 'verify-x.ts');
+  let turn = 0;
+  let sawNudge = false;
+  const fakeModel = async ({ messages }) => {
+    turn += 1;
+    if (turn === 1) {
+      return { toolCalls: [{ id: 'e1', name: 'file_edit', args: { path: codePath, old_string: 'a', new_string: 'b' } }] };
+    }
+    if (messages.some((m) => typeof m.text === 'string' && /no lo verificaste/i.test(m.text))) sawNudge = true;
+    return { text: 'Listo (respuesta final).' };
+  };
+  const runtime = createNativeAgentRuntime({
+    workspaceRoot: wsRoot,
+    getConfig: () => ({ providerId: 'x', apiKey: 'x', model: 'm' }),
+    executeToolCall: async (c) => ({ name: c.tool, command: String(c.arguments?.path ?? ''), status: 'success', output: 'ok', cwd: wsRoot }),
+    callModel: fakeModel,
+  });
+  const session = createAgentSession('verify', wsRoot);
+  const result = await runtime.runUserTurn(session, 'editá verify-x.ts');
+  assert.ok(sawNudge, 'debe empujar a verificar tras editar código sin diagnostics');
+  assert.ok(turn >= 3, `debe reintentar el turno tras el aviso (turnos: ${turn})`);
+  const msgs = result.events.filter((e) => e.type === 'message');
+  assert.equal(msgs[msgs.length - 1].message, 'Listo (respuesta final).');
+}
+
+// ── B3: si corre diagnostics tras editar, NO molesta (no empuja de más) ───────
+{
+  const wsRoot = os.tmpdir();
+  const codePath = path.join(wsRoot, 'verify-y.ts');
+  let turn = 0;
+  let sawNudge = false;
+  const fakeModel = async ({ messages }) => {
+    turn += 1;
+    if (turn === 1) return { toolCalls: [{ id: 'e1', name: 'file_edit', args: { path: codePath, old_string: 'a', new_string: 'b' } }] };
+    if (turn === 2) return { toolCalls: [{ id: 'd1', name: 'diagnostics', args: { path: codePath } }] };
+    if (messages.some((m) => typeof m.text === 'string' && /no lo verificaste/i.test(m.text))) sawNudge = true;
+    return { text: 'Verificado y listo.' };
+  };
+  const runtime = createNativeAgentRuntime({
+    workspaceRoot: wsRoot,
+    getConfig: () => ({ providerId: 'x', apiKey: 'x', model: 'm' }),
+    executeToolCall: async (c) => ({ name: c.tool, command: String(c.arguments?.path ?? ''), status: 'success', output: 'ok', cwd: wsRoot }),
+    callModel: fakeModel,
+  });
+  const session = createAgentSession('verify2', wsRoot);
+  await runtime.runUserTurn(session, 'editá y verificá verify-y.ts');
+  assert.ok(!sawNudge, 'no debe empujar si ya corrió diagnostics');
 }
 
 console.log('agent-native-extra.test.mjs passed');

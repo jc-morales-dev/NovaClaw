@@ -98,6 +98,20 @@ const READ_ONLY_TOOLS = new Set([
   'web_fetch', 'phone_location', 'phone_contacts', 'image_view',
 ]);
 
+// Verificación obligatoria (B3): tras editar un archivo de CÓDIGO, el harness
+// empuja a correr diagnostics/ejecutar antes de dar la respuesta final.
+const CODE_FILE_EXTS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py', '.go', '.rs', '.java',
+  '.kt', '.kts', '.json', '.c', '.cc', '.cpp', '.h', '.hpp', '.rb', '.php',
+  '.swift', '.vue', '.svelte', '.sh',
+]);
+function isCodeFile(p: string): boolean {
+  const i = String(p).lastIndexOf('.');
+  return i >= 0 && CODE_FILE_EXTS.has(String(p).slice(i).toLowerCase());
+}
+// Comandos que cuentan como "verificar" (compilar/testear/ejecutar).
+const VERIFY_CMD = /\b(tsc|node|python3?|npm|pnpm|yarn|deno|bun|go|cargo|pytest|ruff|eslint|jest|vitest|mocha|make|test|build|--check|--noEmit)\b/i;
+
 type ConfigSnapshot = { providerId: string; apiKey: string; model: string };
 
 // Traduce un fallo del modelo a un mensaje claro y accionable para el usuario:
@@ -217,6 +231,11 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
   const KNOWN_TOOLS = new Set(Object.keys(TOOL_NAME_TO_DOT));
   // Cuenta llamadas idénticas (name+args) dentro del turno para cortar loops.
   let loopGuard = new Map<string, number>();
+  // Verificación obligatoria (B3): pendingVerify se prende al editar código y se
+  // apaga al correr diagnostics o ejecutar/testear. Si el modelo intenta cerrar
+  // con código sin verificar, lo empujamos UNA vez a verificar antes de responder.
+  let pendingVerify = false;
+  let verifyNudged = false;
 
   /** Aviso si esta MISMA llamada ya se repitió demasiado en el turno (loop). */
   function loopWarning(tc: { name: string; args: Record<string, any> }): string | null {
@@ -268,7 +287,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     const transcript = toSummarize
       .map((e) => `${e.role.toUpperCase()}: ${e.content}`)
       .join('\n')
-      .slice(0, 24000);
+      .slice(0, 32000);
 
     const cfg = options.getConfig();
     try {
@@ -277,9 +296,9 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
         apiKey: cfg.apiKey,
         model: cfg.model,
         system:
-          'You compress an agent conversation. Produce a concise but COMPLETE summary that preserves: the user goals, decisions made, files created/edited (with paths), commands run and their key results, and anything still pending. Write it as durable notes the agent can rely on to continue. No preamble.',
+          'You compress a coding-agent conversation into durable notes the agent will rely on to CONTINUE the task. Preserve, explicitly and structured: (1) the user goal(s); (2) files created/edited with their FULL paths and what changed in each; (3) commands run and their KEY results (errors, test/diagnostics output); (4) decisions and constraints; (5) the current task plan / TODO state; (6) anything still pending or unresolved. Keep exact identifiers (paths, names, flags). Do NOT invent anything not present. No preamble — just the notes.',
         messages: [{ role: 'user', text: `Summarize this conversation so far:\n\n${transcript}` }],
-        maxTokens: 1024,
+        maxTokens: 2048,
       });
       const summary = (reply.text ?? '').trim();
       if (!summary) throw new Error('empty summary');
@@ -432,6 +451,16 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
 
       // Sin tool calls → respuesta final de texto.
       if (!reply.toolCalls || reply.toolCalls.length === 0) {
+        // B3: si editó código y no lo verificó, empujarlo UNA vez a verificar
+        // antes de dejarlo cerrar (así no dice "listo" sin haber comprobado).
+        if (pendingVerify && !verifyNudged && turnMode === 'build') {
+          verifyNudged = true;
+          messages.push({
+            role: 'user',
+            text: '[sistema] Editaste código en este turno pero todavía no lo verificaste. Antes de responder, corré `diagnostics` sobre el/los archivo(s) que tocaste (y si aplica, ejecutá el código o los tests con terminal_run) y arreglá lo que reporte. Si ya está todo verificado, respondé normalmente.',
+          });
+          continue;
+        }
         const text = reply.text ?? '(sin respuesta)';
         messages.push({ role: 'assistant', text, rawContent: reply.rawContent });
         session.history.push({ role: 'assistant', content: text });
@@ -653,6 +682,15 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     result: ToolExecutionResult,
     events: AgentRuntimeEvent[],
   ): void {
+    // B3: rastrear si quedó código editado sin verificar en este turno.
+    if ((tc.name === 'file_write' || tc.name === 'file_edit' || tc.name === 'file_edit_multi')
+      && result.status === 'success' && isCodeFile(result.command)) {
+      pendingVerify = true;
+    } else if (tc.name === 'diagnostics') {
+      pendingVerify = false;
+    } else if (tc.name === 'terminal_run' && VERIFY_CMD.test(String(result.command ?? ''))) {
+      pendingVerify = false;
+    }
     messages.push({ role: 'tool', toolCallId: tc.id, toolName: tc.name, result: result.output });
     // Visión: si la tool produjo una imagen (image.view / phone.photo), la
     // adjuntamos como mensaje de usuario para que el modelo la VEA de verdad.
@@ -684,6 +722,8 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
   ): Promise<RuntimeResult> {
     turnMode = mode === 'plan' ? 'plan' : 'build';
     loopGuard = new Map(); // el anti-loop se cuenta por turno
+    pendingVerify = false; // la verificación obligatoria también es por turno
+    verifyNudged = false;
     session.history.push({ role: 'user', content: message });
     // Conversaciones largas: resumir el historial con el modelo antes de armar
     // el contexto, para que el turno nunca reviente la ventana y no se pierda el hilo.
