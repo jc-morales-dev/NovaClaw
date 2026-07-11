@@ -91,14 +91,27 @@ falle por falta de token, el agente lea "falta GITHUB_TOKEN" y sepa pedírtelo.
 
 ## Fases (para construirlo sin romper nada)
 
-- **Fase A** — UI nueva (catálogo + formulario) + flujo de **token por chat** +
-  secretos al Keystore (namespace `mcp:<server>`) + confirmación con huella +
-  captura de stderr. Cubre ~90% de los MCP reales.
-- **Fase B** — **OAuth device flow** (el flujo del código) para los que lo
-  soportan (GitHub, Google).
-- **Fase C** — OAuth completo + **transporte HTTP/SSE** para MCP remotos (lo más
-  grande; solo si se necesita). Requiere sumar cliente HTTP + el flujo de
-  autorización del spec MCP 2025 al `McpManager` (hoy es stdio puro).
+- **Fase A** ✅ HECHA — UI nueva (catálogo + formulario) + tokens al Keystore
+  (namespace `mcp:<id>`) + placeholder `${SECRET:<id>}` (el config nunca guarda
+  el token) + huella al instalar + captura de stderr. Cubre ~90% de los MCP.
+- **Fase B** ✅ HECHA — **OAuth device flow** (el flujo del código) para GitHub/
+  GitLab. `src/agent/oauthDevice.ts` + tarjeta con el código en la UI + polling.
+  El `client_id` lo trae Julio (registra una OAuth App y setea la env var); si no
+  está, cae al pegado de token manual.
+- **Fase C** ✅ HECHA (transporte + bearer) — **cliente HTTP** (Streamable HTTP)
+  para MCP remotos (`src/agent/mcpHttp.ts`); el `McpManager` ahora conecta stdio
+  (npx local) o HTTP (url remota). Auth por token Bearer en el header, con el
+  mismo `${SECRET:<id>}`. Formulario manual con toggle Local/Remoto.
+
+### Decisión sobre el OAuth-redirect completo (spec MCP 2025)
+
+El flujo OAuth 2.1 con redirect (dynamic client registration + PKCE + callback
+por navegador) NO se implementó a propósito: en un teléfono es frágil (necesita
+manejar un redirect URI / esquema custom) y el **device flow (Fase B) ya cubre la
+autenticación interactiva** de forma más robusta y sin registrar redirect URIs.
+Para MCP remotos que exigen OAuth, la recomendación es device flow o un token
+Bearer. Si algún día aparece un MCP remoto que SOLO soporte redirect, se suma
+ahí (es aditivo al cliente HTTP que ya existe).
 
 ## Piezas de código a tocar (referencia para implementar)
 

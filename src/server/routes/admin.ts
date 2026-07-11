@@ -47,7 +47,7 @@ export function registerAdminRoutes(app: Express) {
     res.json({ catalog: catalogForClient() });
   });
 
-  // Conectar un MCP (desde el catálogo por `id`, o manual con command/args).
+  // Conectar un MCP (catálogo por `id`, o manual: comando local O url remota).
   // Los secretos NO viajan en texto plano al config: se guardan aparte (Keystore
   // en el teléfono vía el bridge; en dev, secretValueDev → novaclaw.secrets.json)
   // y el config solo lleva el placeholder ${SECRET:<id>}.
@@ -56,29 +56,39 @@ export function registerAdminRoutes(app: Express) {
     const fromCatalog = body.catalogId ? findCatalogEntry(String(body.catalogId)) : undefined;
 
     const id = String(body.id ?? fromCatalog?.id ?? '').trim();
+    const url = typeof body.url === 'string' ? body.url.trim() : '';
     const command = String(body.command ?? fromCatalog?.command ?? '').trim();
     const args = Array.isArray(body.args) ? body.args.map(String) : (fromCatalog?.args ?? []);
-    if (!id || !command) {
-      return res.status(400).json({ error: 'Faltan "id" o "command".' });
+    if (!id || (!command && !url)) {
+      return res.status(400).json({ error: 'Faltan "id" y ("command" o "url").' });
     }
 
-    // Nombre de la env var del secreto (del catálogo, o del form manual).
+    // Nombre de la env var / header del secreto (del catálogo, o del form manual).
     const secretEnv = fromCatalog && fromCatalog.auth.type !== 'none'
       ? fromCatalog.auth.secret.env
       : (typeof body.secretEnv === 'string' ? body.secretEnv.trim() : '');
 
     // En dev (PC) el valor del secreto puede venir para guardarlo localmente.
     // En el teléfono el WebView YA lo guardó en el Keystore vía el bridge.
-    if (secretEnv && typeof body.secretValueDev === 'string' && body.secretValueDev) {
+    if ((secretEnv || url) && typeof body.secretValueDev === 'string' && body.secretValueDev) {
       saveMcpSecretDev(id, body.secretValueDev);
     }
 
     const cfg = readMcpConfig();
-    cfg[id] = {
-      command,
-      args,
-      ...(secretEnv ? { env: { [secretEnv]: `\${SECRET:${id}}` } } : {}),
-    };
+    if (url) {
+      // MCP remoto: el token (si hay) va en Authorization: Bearer ${SECRET:id}.
+      const hasToken = Boolean((body.secretValueDev && String(body.secretValueDev)) || body.hasToken);
+      cfg[id] = {
+        url,
+        ...(hasToken ? { headers: { Authorization: `Bearer \${SECRET:${id}}` } } : {}),
+      };
+    } else {
+      cfg[id] = {
+        command,
+        args,
+        ...(secretEnv ? { env: { [secretEnv]: `\${SECRET:${id}}` } } : {}),
+      };
+    }
     try {
       writeMcpConfig(cfg);
       const result = await reconnectMcp();
@@ -90,7 +100,7 @@ export function registerAdminRoutes(app: Express) {
         server: id,
         tools: tools.map((t) => ({ name: t.name, description: t.description })),
         // Si falló y pedía secreto, probablemente falta/está mal el token.
-        needsSecret: !ok && Boolean(secretEnv),
+        needsSecret: !ok && Boolean(secretEnv || url),
         error: ok ? null : (failure?.error ?? 'No se pudo conectar.'),
       });
     } catch (error: any) {

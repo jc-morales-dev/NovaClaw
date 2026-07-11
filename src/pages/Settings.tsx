@@ -79,9 +79,11 @@ export default function Settings() {
   const [savedSecrets, setSavedSecrets] = useState<Record<string, boolean>>({});
   // Formulario manual (avanzado).
   const [showManual, setShowManual] = useState(false);
+  const [manRemote, setManRemote] = useState(false); // false = local (npx), true = URL remota
   const [manName, setManName] = useState('');
   const [manCmd, setManCmd] = useState('npx');
   const [manArgs, setManArgs] = useState('');
+  const [manUrl, setManUrl] = useState('');
   const [manSecretEnv, setManSecretEnv] = useState('');
   const [manSecretVal, setManSecretVal] = useState('');
   // JSON crudo (súper avanzado, escondido).
@@ -136,30 +138,30 @@ export default function Settings() {
     }
   }
 
-  /** Conecta un MCP manual (formulario, no JSON). */
+  /** Conecta un MCP manual (formulario, no JSON): local (npx) o remoto (URL). */
   async function connectManual() {
     setMcpError('');
     const id = manName.trim();
-    if (!id || !manCmd.trim()) { setMcpError(isSpanish ? 'Poné nombre y comando.' : 'Enter a name and a command.'); return; }
+    if (!id) { setMcpError(isSpanish ? 'Poné un nombre.' : 'Enter a name.'); return; }
+    if (manRemote && !manUrl.trim()) { setMcpError(isSpanish ? 'Poné la URL del servidor.' : 'Enter the server URL.'); return; }
+    if (!manRemote && !manCmd.trim()) { setMcpError(isSpanish ? 'Poné el comando.' : 'Enter the command.'); return; }
     setMcpBusy(id);
     try {
-      const hasSecret = Boolean(manSecretEnv.trim() && manSecretVal.trim());
-      if (hasSecret) saveMcpSecret(id, manSecretVal.trim());
+      const token = manSecretVal.trim();
+      const hasSecret = manRemote ? Boolean(token) : Boolean(manSecretEnv.trim() && token);
+      if (hasSecret) saveMcpSecret(id, token);
       const ok = await confirmBiometric(
         isSpanish ? `Instalar ${id}` : `Install ${id}`,
         isSpanish ? 'Confirmá con tu huella' : 'Confirm with your fingerprint',
       );
       if (!ok) { setMcpError(isSpanish ? 'Cancelado.' : 'Cancelled.'); return; }
-      const payload: any = {
-        id,
-        command: manCmd.trim(),
-        args: manArgs.trim() ? manArgs.trim().split(/\s+/) : [],
-        secretEnv: manSecretEnv.trim() || undefined,
-      };
-      if (hasSecret && !hasNativeMcp()) payload.secretValueDev = manSecretVal.trim();
+      const payload: any = manRemote
+        ? { id, url: manUrl.trim(), hasToken: hasSecret }
+        : { id, command: manCmd.trim(), args: manArgs.trim() ? manArgs.trim().split(/\s+/) : [], secretEnv: manSecretEnv.trim() || undefined };
+      if (hasSecret && !hasNativeMcp()) payload.secretValueDev = token;
       const res = await platform.connectMcp(payload);
       if (!res.ok) { setMcpError(res.error ?? (isSpanish ? 'No se pudo conectar.' : 'Could not connect.')); }
-      else { setManName(''); setManArgs(''); setManSecretEnv(''); setManSecretVal(''); setShowManual(false); }
+      else { setManName(''); setManArgs(''); setManUrl(''); setManSecretEnv(''); setManSecretVal(''); setShowManual(false); }
       await refreshMcp();
     } catch (error: any) {
       setMcpError(error?.message ?? 'Error');
@@ -875,13 +877,28 @@ export default function Settings() {
                 </button>
                 {showManual && (
                   <div className="rounded-xl bg-zinc-900 border border-zinc-800 p-3 space-y-2">
-                    <input value={manName} onChange={(e) => setManName(e.target.value)} placeholder={isSpanish ? 'Nombre (ej: github)' : 'Name (e.g. github)'} spellCheck={false} autoCapitalize="none" autoCorrect="off" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
-                    <input value={manCmd} onChange={(e) => setManCmd(e.target.value)} placeholder="npx" spellCheck={false} autoCapitalize="none" autoCorrect="off" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] font-mono text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
-                    <input value={manArgs} onChange={(e) => setManArgs(e.target.value)} placeholder={isSpanish ? 'Argumentos (ej: -y @scope/paquete)' : 'Args (e.g. -y @scope/package)'} spellCheck={false} autoCapitalize="none" autoCorrect="off" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] font-mono text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
-                    <div className="grid grid-cols-2 gap-2">
-                      <input value={manSecretEnv} onChange={(e) => setManSecretEnv(e.target.value)} placeholder={isSpanish ? 'Variable (opcional)' : 'Env var (optional)'} spellCheck={false} autoCapitalize="none" autoCorrect="off" className="bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] font-mono text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
-                      <input type="password" value={manSecretVal} onChange={(e) => setManSecretVal(e.target.value)} placeholder={isSpanish ? 'Token (opcional)' : 'Token (optional)'} spellCheck={false} autoCapitalize="none" autoCorrect="off" className="bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
+                    {/* Local (npx) o remoto (URL) */}
+                    <div className="flex gap-1 p-1 bg-zinc-950 rounded-lg border border-zinc-800">
+                      <button type="button" onClick={() => setManRemote(false)} className={`flex-1 text-[12px] py-1.5 rounded-md transition ${!manRemote ? 'bg-[#FF7A1A] text-[#1A0E02] font-semibold' : 'text-zinc-400'}`}>{isSpanish ? 'Local (npx)' : 'Local (npx)'}</button>
+                      <button type="button" onClick={() => setManRemote(true)} className={`flex-1 text-[12px] py-1.5 rounded-md transition ${manRemote ? 'bg-[#FF7A1A] text-[#1A0E02] font-semibold' : 'text-zinc-400'}`}>{isSpanish ? 'Remoto (URL)' : 'Remote (URL)'}</button>
                     </div>
+                    <input value={manName} onChange={(e) => setManName(e.target.value)} placeholder={isSpanish ? 'Nombre (ej: github)' : 'Name (e.g. github)'} spellCheck={false} autoCapitalize="none" autoCorrect="off" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
+                    {manRemote ? (
+                      <input value={manUrl} onChange={(e) => setManUrl(e.target.value)} placeholder="https://mi-servidor.com/mcp" spellCheck={false} autoCapitalize="none" autoCorrect="off" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] font-mono text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
+                    ) : (
+                      <>
+                        <input value={manCmd} onChange={(e) => setManCmd(e.target.value)} placeholder="npx" spellCheck={false} autoCapitalize="none" autoCorrect="off" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] font-mono text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
+                        <input value={manArgs} onChange={(e) => setManArgs(e.target.value)} placeholder={isSpanish ? 'Argumentos (ej: -y @scope/paquete)' : 'Args (e.g. -y @scope/package)'} spellCheck={false} autoCapitalize="none" autoCorrect="off" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] font-mono text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
+                      </>
+                    )}
+                    {manRemote ? (
+                      <input type="password" value={manSecretVal} onChange={(e) => setManSecretVal(e.target.value)} placeholder={isSpanish ? 'Token Bearer (opcional)' : 'Bearer token (optional)'} spellCheck={false} autoCapitalize="none" autoCorrect="off" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
+                    ) : (
+                      <div className="grid grid-cols-2 gap-2">
+                        <input value={manSecretEnv} onChange={(e) => setManSecretEnv(e.target.value)} placeholder={isSpanish ? 'Variable (opcional)' : 'Env var (optional)'} spellCheck={false} autoCapitalize="none" autoCorrect="off" className="bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] font-mono text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
+                        <input type="password" value={manSecretVal} onChange={(e) => setManSecretVal(e.target.value)} placeholder={isSpanish ? 'Token (opcional)' : 'Token (optional)'} spellCheck={false} autoCapitalize="none" autoCorrect="off" className="bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
+                      </div>
+                    )}
                     <button type="button" disabled={mcpBusy === manName.trim()} onClick={connectManual} className="w-full bg-[#FF7A1A] text-[#1A0E02] font-semibold py-2.5 rounded-lg hover:brightness-110 disabled:opacity-50 transition-colors text-[13px]">
                       {isSpanish ? 'Conectar' : 'Connect'}
                     </button>

@@ -9,11 +9,17 @@
  * un mensaje), que es el transporte estándar de MCP para procesos locales.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { McpHttpClient, extractToolText } from './mcpHttp';
 
 export interface McpServerConfig {
-  command: string;
+  /** stdio: comando local (npx …). */
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /** HTTP: URL de un servidor MCP remoto (Streamable HTTP). Si está, se usa HTTP. */
+  url?: string;
+  /** HTTP: cabeceras (ej: Authorization). Soportan ${SECRET:<id>}. */
+  headers?: Record<string, string>;
 }
 
 /** Tool descubierta en un servidor MCP, ya con nombre namespaced para el modelo. */
@@ -34,26 +40,29 @@ const MAX_STDERR_CHARS = 2000;
 /** Resuelve un secreto por id (ej: 'github') a su valor real, o null si no hay. */
 export type SecretResolver = (id: string) => Promise<string | null> | string | null;
 
-const SECRET_PLACEHOLDER = /^\$\{SECRET:([A-Za-z0-9_.:-]+)\}$/;
+// Placeholder ${SECRET:<id>}. Global: puede ir solo (env var) o embebido en una
+// cabecera (ej: `Bearer ${SECRET:remoto}`).
+const SECRET_PLACEHOLDER = /\$\{SECRET:([A-Za-z0-9_.:-]+)\}/g;
 
 /**
- * Reemplaza los valores `${SECRET:<id>}` del env por el secreto real del
- * Keystore. Los que no resuelven se dejan vacíos (el server MCP dará el error,
- * que ahora capturamos por stderr). Así el archivo de config NUNCA guarda el token.
+ * Reemplaza cada `${SECRET:<id>}` de un mapa (env o headers) por el secreto real
+ * del Keystore, aparezca donde aparezca en el valor. Los que no resuelven quedan
+ * vacíos (el server MCP dará el error, que capturamos). Así el config NUNCA
+ * guarda el token, solo el placeholder.
  */
-async function resolveEnvSecrets(
-  env: Record<string, string> | undefined,
+async function resolveSecretsInMap(
+  map: Record<string, string> | undefined,
   resolve: SecretResolver | undefined,
 ): Promise<Record<string, string> | undefined> {
-  if (!env) return env;
+  if (!map) return map;
   const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(env)) {
-    const m = typeof v === 'string' ? v.match(SECRET_PLACEHOLDER) : null;
-    if (m && resolve) {
-      out[k] = (await resolve(m[1])) ?? '';
-    } else {
-      out[k] = v;
-    }
+  for (const [k, v] of Object.entries(map)) {
+    if (typeof v !== 'string' || !resolve) { out[k] = v; continue; }
+    const ids = [...v.matchAll(SECRET_PLACEHOLDER)].map((m) => m[1]);
+    if (ids.length === 0) { out[k] = v; continue; }
+    const values = new Map<string, string>();
+    for (const id of ids) if (!values.has(id)) values.set(id, (await resolve(id)) ?? '');
+    out[k] = v.replace(SECRET_PLACEHOLDER, (_all, id) => values.get(id) ?? '');
   }
   return out;
 }
@@ -167,13 +176,7 @@ class McpClient {
 
   async callTool(originalName: string, args: any): Promise<string> {
     const res = await this.request('tools/call', { name: originalName, arguments: args ?? {} });
-    const content: any[] = Array.isArray(res?.content) ? res.content : [];
-    const text = content
-      .filter((c) => c?.type === 'text' && typeof c.text === 'string')
-      .map((c) => c.text)
-      .join('\n');
-    const body = text || JSON.stringify(res ?? {});
-    return res?.isError ? `MCP tool error: ${body}` : body;
+    return extractToolText(res);
   }
 
   close(): void {
@@ -182,12 +185,16 @@ class McpClient {
   }
 }
 
+/** Cliente MCP: stdio (proceso local) o HTTP (servidor remoto). */
+type McpConnection = McpClient | McpHttpClient;
+
 /** Administra varios servidores MCP y enruta las llamadas a tools. */
 export class McpManager {
-  private clients: McpClient[] = [];
+  private clients: McpConnection[] = [];
 
   /** Conecta todos los servidores del config. Los que fallan no rompen al resto.
-   *  `resolveSecret` mapea los `${SECRET:<id>}` del env a su valor del Keystore. */
+   *  `resolveSecret` mapea los `${SECRET:<id>}` de env/headers a su valor del Keystore.
+   *  Config con `url` → HTTP remoto; con `command` → proceso local stdio. */
   async connectAll(
     servers: Record<string, McpServerConfig> | undefined,
     resolveSecret?: SecretResolver,
@@ -195,19 +202,27 @@ export class McpManager {
     const connected: string[] = [];
     const failed: Array<{ name: string; error: string }> = [];
     for (const [name, cfg] of Object.entries(servers ?? {})) {
-      if (!cfg?.command) { failed.push({ name, error: 'falta "command"' }); continue; }
-      const env = await resolveEnvSecrets(cfg.env, resolveSecret);
-      const client = new McpClient(name, cfg.command, cfg.args ?? [], env);
+      let client: McpConnection;
+      if (cfg?.url) {
+        const headers = await resolveSecretsInMap(cfg.headers, resolveSecret);
+        client = new McpHttpClient(name, cfg.url, headers ?? {});
+      } else if (cfg?.command) {
+        const env = await resolveSecretsInMap(cfg.env, resolveSecret);
+        client = new McpClient(name, cfg.command, cfg.args ?? [], env);
+      } else {
+        failed.push({ name, error: 'falta "command" o "url"' });
+        continue;
+      }
       try {
         await client.initialize();
         this.clients.push(client);
         connected.push(name);
       } catch (error: any) {
-        // El stderr del servidor suele decir el motivo real (falta un token, etc.).
+        // El stderr / la respuesta del servidor suele decir el motivo (falta token, etc.).
         const stderr = client.lastStderr();
         const base = error?.message ?? 'fallo al conectar';
         client.close();
-        failed.push({ name, error: stderr ? `${base} — ${stderr}` : base });
+        failed.push({ name, error: stderr && !base.includes(stderr) ? `${base} — ${stderr}` : base });
       }
     }
     return { connected, failed };
