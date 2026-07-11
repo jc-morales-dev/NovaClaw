@@ -8,6 +8,18 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Contenido ancho del chat (fórmulas KaTeX, bloques de código): scroll
+   interno propio, nunca desbordar la pantalla hacia los lados. */
+.katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.prose pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
 /* Custom scrollbar for a polished look */
 ::-webkit-scrollbar {
   width: 0px;

@@ -927,7 +927,7 @@ export default function ChatView() {
           </div>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto px-4 py-6 scroll-smooth space-y-6">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-6 scroll-smooth space-y-6">
           {messages.map((msg) => {
             if (msg.todos) {
               return <div key={msg.id} className="flex justify-start"><TodoListBlock msg={msg} /></div>;
@@ -977,8 +977,20 @@ export default function ChatView() {
                   </span>
                   <span className="text-[12.5px] font-semibold text-zinc-400 tracking-wide">NovaClaw</span>
                 </div>
-                <div className="prose prose-invert max-w-none pl-7 text-[15px] leading-relaxed prose-p:leading-relaxed prose-p:my-2 prose-headings:font-semibold prose-pre:bg-[#0D0D0D] prose-pre:border prose-pre:border-white/10 prose-pre:rounded-xl prose-code:text-[#FFC58A] prose-code:before:content-none prose-code:after:content-none prose-a:text-[#FFB25C]">
-                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
+                <div className="prose prose-invert max-w-none min-w-0 break-words pl-7 text-[15px] leading-relaxed prose-p:leading-relaxed prose-p:my-2 prose-headings:font-semibold prose-pre:bg-[#0D0D0D] prose-pre:border prose-pre:border-white/10 prose-pre:rounded-xl prose-code:text-[#FFC58A] prose-code:before:content-none prose-code:after:content-none prose-a:text-[#FFB25C]">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm, remarkMath]}
+                    rehypePlugins={[rehypeKatex]}
+                    components={{
+                      // Las tablas anchas scrollean DENTRO de su propio contenedor
+                      // en vez de estirar toda la pantalla hacia los lados.
+                      table: (props) => (
+                        <div className="max-w-full overflow-x-auto">
+                          <table {...props} />
+                        </div>
+                      ),
+                    }}
+                  >
                     {msg.content || ''}
                   </ReactMarkdown>
                 </div>
@@ -1066,12 +1078,9 @@ export default function ChatView() {
               e.target.style.height = 'auto';
               e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
             }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                handleSubmit();
-              }
-            }}
+            // Sin envío con Enter: en Android el teclado/pegado puede disparar
+            // un Enter fantasma y mandaba el mensaje solo al pegar texto. El
+            // envío es ÚNICAMENTE con el botón; Enter agrega una línea nueva.
             placeholder={t.chatInputPlaceholder}
             className="flex-1 bg-transparent text-zinc-100 placeholder-zinc-500 px-1 py-2.5 focus:outline-none text-[15px] resize-none min-h-[42px] max-h-[120px] scrollbar-hide"
             rows={1}
