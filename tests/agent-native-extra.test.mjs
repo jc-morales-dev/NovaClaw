@@ -304,4 +304,77 @@ const noopExecutor = async (call) => ({
   assert.equal(subEvents.length, 2, 'deben registrarse 2 reportes de subagente');
 }
 
+// ── Auto: omite permisos — ejecuta acciones sensibles sin pedir aprobación ────
+{
+  const wsRoot = os.tmpdir();
+  let turn = 0;
+  let execCalls = 0;
+  const fakeModel = async () => {
+    turn += 1;
+    if (turn === 1) return { toolCalls: [{ id: 'w1', name: 'file_write', args: { path: '/etc/afuera.txt', content: 'x' } }] };
+    return { text: 'hecho' };
+  };
+  const runtime = createNativeAgentRuntime({
+    workspaceRoot: wsRoot,
+    getConfig: () => ({ providerId: 'x', apiKey: 'x', model: 'm' }),
+    executeToolCall: async (c) => { execCalls += 1; return { name: c.tool, command: String(c.arguments?.path ?? ''), status: 'success', output: 'ok', cwd: wsRoot }; },
+    callModel: fakeModel,
+  });
+  const session = createAgentSession('auto', wsRoot);
+  const result = await runtime.runUserTurn(session, 'escribí afuera', undefined, undefined, 'auto');
+  assert.equal(result.events.filter((e) => e.type === 'approval').length, 0, 'auto NO debe pedir aprobación');
+  assert.ok(execCalls >= 1, 'la tool sensible debe ejecutarse en auto');
+}
+
+// ── Build: pide aprobación para una escritura fuera del workspace ─────────────
+{
+  const wsRoot = os.tmpdir();
+  let execCalls = 0;
+  const fakeModel = async () => ({ toolCalls: [{ id: 'w1', name: 'file_write', args: { path: '/etc/afuera.txt', content: 'x' } }] });
+  const runtime = createNativeAgentRuntime({
+    workspaceRoot: wsRoot,
+    getConfig: () => ({ providerId: 'x', apiKey: 'x', model: 'm' }),
+    executeToolCall: async (c) => { execCalls += 1; return { name: c.tool, command: '', status: 'success', output: 'ok', cwd: wsRoot }; },
+    callModel: fakeModel,
+  });
+  const session = createAgentSession('build', wsRoot);
+  const result = await runtime.runUserTurn(session, 'escribí afuera', undefined, undefined, 'build');
+  assert.equal(result.events.filter((e) => e.type === 'approval').length, 1, 'build debe pedir aprobación');
+  assert.equal(execCalls, 0, 'no ejecuta hasta aprobar');
+  assert.ok(session.pendingApproval, 'queda una acción pendiente');
+}
+
+// ── "Siempre en este chat": auto-aprueba esa tool el resto de la sesión ───────
+{
+  const wsRoot = os.tmpdir();
+  let execCalls = 0;
+  let modelFn;
+  const runtime = createNativeAgentRuntime({
+    workspaceRoot: wsRoot,
+    getConfig: () => ({ providerId: 'x', apiKey: 'x', model: 'm' }),
+    executeToolCall: async (c) => { execCalls += 1; return { name: c.tool, command: String(c.arguments?.path ?? ''), status: 'success', output: 'ok', cwd: wsRoot }; },
+    callModel: (input) => modelFn(input),
+  });
+  const session = createAgentSession('always', wsRoot);
+
+  // Turno 1: escritura afuera → pausa por aprobación.
+  modelFn = async () => ({ toolCalls: [{ id: 'w1', name: 'file_write', args: { path: '/etc/a.txt', content: 'x' } }] });
+  const r1 = await runtime.runUserTurn(session, 'escribí a', undefined, undefined, 'build');
+  assert.equal(r1.events.filter((e) => e.type === 'approval').length, 1);
+  assert.equal(execCalls, 0);
+
+  // Aprobamos con scope 'always' → ejecuta y recuerda la tool.
+  modelFn = async () => ({ text: 'listo a' });
+  await runtime.resolveApproval(session, true, undefined, undefined, 'always');
+  assert.ok((session.autoApproveTools ?? []).includes('file.write'), 'debe recordar file.write en la sesión');
+  assert.equal(execCalls, 1, 'ejecutó tras aprobar');
+
+  // Turno 2: otra escritura afuera → ya NO pide aprobación.
+  let turn2 = 0;
+  modelFn = async () => { turn2 += 1; return turn2 === 1 ? { toolCalls: [{ id: 'w2', name: 'file_write', args: { path: '/etc/b.txt', content: 'y' } }] } : { text: 'listo b' }; };
+  const r2 = await runtime.runUserTurn(session, 'escribí b', undefined, undefined, 'build');
+  assert.equal(r2.events.filter((e) => e.type === 'approval').length, 0, 'no vuelve a pedir aprobación para file.write');
+  assert.equal(execCalls, 2, 'ejecutó la 2da sin aprobar');
+}
+
 console.log('agent-native-extra.test.mjs passed');

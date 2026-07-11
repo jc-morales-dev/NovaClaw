@@ -98,7 +98,8 @@ type ServerEvent =
 const SLASH_COMMANDS: Array<{ cmd: string; desc: string }> = [
   { cmd: '/deshacer', desc: 'Revertir el último cambio del agente' },
   { cmd: '/plan', desc: 'Modo Plan — el agente solo analiza y propone' },
-  { cmd: '/build', desc: 'Modo Build — el agente ejecuta los cambios' },
+  { cmd: '/build', desc: 'Modo Build — ejecuta y pide permiso para lo sensible' },
+  { cmd: '/auto', desc: 'Modo Auto — ejecuta TODO sin pedir permiso' },
 ];
 
 // Sesión por defecto (retrocompat con la clave vieja) + helpers multi-conversación.
@@ -452,7 +453,7 @@ function ApprovalRequestBlock({
   rejectLabel,
 }: {
   msg: Message;
-  onResolve: (messageId: number, approved: boolean) => void;
+  onResolve: (messageId: number, approved: boolean, scope: 'once' | 'always') => void;
   disabled: boolean;
   approveLabel: string;
   rejectLabel: string;
@@ -487,22 +488,32 @@ function ApprovalRequestBlock({
       </div>
 
       {status === 'pending' && (
-        <div className="flex gap-2 mt-4">
+        <div className="mt-4 space-y-2">
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onResolve(msg.id, true, 'once')}
+              className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors"
+            >
+              {approveLabel}
+            </button>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onResolve(msg.id, false, 'once')}
+              className="flex-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-100 text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors"
+            >
+              {rejectLabel}
+            </button>
+          </div>
           <button
             type="button"
             disabled={disabled}
-            onClick={() => onResolve(msg.id, true)}
-            className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors"
+            onClick={() => onResolve(msg.id, true, 'always')}
+            className="w-full border border-[#FF7A1A]/40 text-[#FFB25C] hover:bg-[#FF7A1A]/10 disabled:opacity-50 text-[13.5px] font-semibold px-4 py-2.5 rounded-xl transition-colors"
           >
-            {approveLabel}
-          </button>
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onResolve(msg.id, false)}
-            className="flex-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-100 text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors"
-          >
-            {rejectLabel}
+            Permitir siempre en este chat
           </button>
         </div>
       )}
@@ -524,7 +535,7 @@ export default function ChatView() {
   const t = translations[appLanguage as keyof typeof translations] || translations.English;
 
   const [input, setInput] = useState('');
-  const [mode, setMode] = useState<'plan' | 'build'>('build');
+  const [mode, setMode] = useState<'plan' | 'build' | 'auto'>('build');
   const [activeSessionId, setActiveSessionId] = useState<string>(
     () => localStorage.getItem(ACTIVE_SESSION_KEY) || DEFAULT_SESSION_ID,
   );
@@ -677,6 +688,7 @@ export default function ChatView() {
     if (c === '/deshacer' || c === '/undo') { setInput(''); await handleUndo(); return true; }
     if (c === '/plan') { setMode('plan'); setInput(''); return true; }
     if (c === '/build') { setMode('build'); setInput(''); return true; }
+    if (c === '/auto') { setMode('auto'); setInput(''); return true; }
     return false;
   };
 
@@ -790,7 +802,7 @@ export default function ChatView() {
     await submitText(input);
   };
 
-  const handleApprovalResolution = async (messageId: number, approved: boolean) => {
+  const handleApprovalResolution = async (messageId: number, approved: boolean, scope: 'once' | 'always' = 'once') => {
     setPendingApprovalMessageId(messageId);
     setMessages((prev) =>
       prev.map((message) =>
@@ -808,7 +820,7 @@ export default function ChatView() {
     setIsTyping(true);
 
     try {
-      await platform.approveActionStream(sessionId, approved, (ev) => appendServerEvents([ev]));
+      await platform.approveActionStream(sessionId, approved, (ev) => appendServerEvents([ev]), undefined, scope);
     } catch (error: any) {
       setMessages((prev) => [
         ...prev,
@@ -1083,7 +1095,7 @@ export default function ChatView() {
             )}
           </div>
         )}
-        {/* Modo: Build (ejecuta) / Plan (solo analiza y propone) */}
+        {/* Modo: Build (pide permiso) / Plan (solo propone) / Auto (omite permisos) */}
         <div className="flex items-center gap-1 mb-2 px-1">
           <button
             type="button"
@@ -1099,8 +1111,19 @@ export default function ChatView() {
           >
             Plan
           </button>
-          <span className="text-[10.5px] text-zinc-600 ml-1">
-            {mode === 'plan' ? 'Solo analiza y propone' : 'Ejecuta cambios'}
+          <button
+            type="button"
+            onClick={() => setMode('auto')}
+            className={`px-2.5 py-1 rounded-full text-[11.5px] font-semibold border transition-colors ${mode === 'auto' ? 'bg-red-500/15 text-red-300 border-red-500/40' : 'text-zinc-500 border-transparent hover:text-zinc-300'}`}
+          >
+            Auto
+          </button>
+          <span className={`text-[10.5px] ml-1 ${mode === 'auto' ? 'text-red-400' : 'text-zinc-600'}`}>
+            {mode === 'plan'
+              ? 'Solo analiza y propone'
+              : mode === 'auto'
+                ? '⚠ Ejecuta todo sin pedir permiso'
+                : 'Pide permiso para lo sensible'}
           </span>
         </div>
         <form

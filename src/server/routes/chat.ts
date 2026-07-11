@@ -20,7 +20,7 @@ function openSse(res: Response) {
 
 export function registerChatRoutes(app: Express) {
   app.post('/api/chat', async (req, res) => {
-    const { message, sessionId = AGENT_SESSION_ID } = req.body;
+    const { message, sessionId = AGENT_SESSION_ID, mode } = req.body;
 
     if (!message?.trim()) {
       return res.status(400).json({ error: 'Message is required' });
@@ -34,7 +34,8 @@ export function registerChatRoutes(app: Express) {
 
     try {
       const session = getOrCreateSession(sessionId);
-      const result = await pickRuntime().runUserTurn(session, message);
+      const turnMode = mode === 'plan' ? 'plan' : mode === 'auto' ? 'auto' : 'build';
+      const result = await pickRuntime().runUserTurn(session, message, undefined, undefined, turnMode);
       runtimeState.terminal.cwd = session.cwd;
       saveSessionsToDisk();
       return res.json({ events: result.events });
@@ -70,7 +71,8 @@ export function registerChatRoutes(app: Express) {
     const send = openSse(res);
     try {
       const session = getOrCreateSession(sessionId);
-      const result = await pickRuntime().runUserTurn(session, message, (ev) => send('agent', ev), controller.signal, mode === 'plan' ? 'plan' : 'build');
+      const turnMode = mode === 'plan' ? 'plan' : mode === 'auto' ? 'auto' : 'build';
+      const result = await pickRuntime().runUserTurn(session, message, (ev) => send('agent', ev), controller.signal, turnMode);
       finished = true;
       runtimeState.terminal.cwd = session.cwd;
       saveSessionsToDisk();
@@ -85,14 +87,15 @@ export function registerChatRoutes(app: Express) {
   });
 
   app.post('/api/chat/approval/stream', async (req, res) => {
-    const { sessionId = AGENT_SESSION_ID, approved } = req.body;
+    const { sessionId = AGENT_SESSION_ID, approved, scope } = req.body;
     const controller = new AbortController();
     let finished = false;
     res.on('close', () => { if (!finished) controller.abort(); });
     const send = openSse(res);
     try {
       const session = getOrCreateSession(sessionId);
-      const result = await pickRuntime().resolveApproval(session, Boolean(approved), (ev) => send('agent', ev), controller.signal);
+      const approvalScope = scope === 'always' ? 'always' : 'once';
+      const result = await pickRuntime().resolveApproval(session, Boolean(approved), (ev) => send('agent', ev), controller.signal, approvalScope);
       finished = true;
       runtimeState.terminal.cwd = session.cwd;
       saveSessionsToDisk();
@@ -107,11 +110,11 @@ export function registerChatRoutes(app: Express) {
   });
 
   app.post('/api/chat/approval', async (req, res) => {
-    const { sessionId = AGENT_SESSION_ID, approved } = req.body;
+    const { sessionId = AGENT_SESSION_ID, approved, scope } = req.body;
 
     try {
       const session = getOrCreateSession(sessionId);
-      const result = await pickRuntime().resolveApproval(session, Boolean(approved));
+      const result = await pickRuntime().resolveApproval(session, Boolean(approved), undefined, undefined, scope === 'always' ? 'always' : 'once');
       runtimeState.terminal.cwd = session.cwd;
       saveSessionsToDisk();
       return res.json({ events: result.events });

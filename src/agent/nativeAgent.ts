@@ -229,7 +229,7 @@ You are in PLAN mode. Editing files, running commands, installing anything, sub-
 export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
   const maxIterations = options.maxIterations ?? 32;
   const callModel = options.callModel ?? callModelWithTools;
-  let turnMode: 'plan' | 'build' = 'build';
+  let turnMode: 'plan' | 'build' | 'auto' = 'build';
 
   function dotName(nativeName: string): string {
     return TOOL_NAME_TO_DOT[nativeName] ?? nativeName;
@@ -672,7 +672,11 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
         workspaceRoot: session.workspaceRoot,
       });
 
-      if (decision.requiresApproval) {
+      // Auto = omitir permisos; o si el usuario ya aprobó "siempre" esta tool.
+      const needsApproval = decision.requiresApproval
+        && turnMode !== 'auto'
+        && !(session.autoApproveTools ?? []).includes(call.tool);
+      if (needsApproval) {
         session.pendingApproval = { toolCall: call, summary: decision.summary, reason: decision.reason };
         (session as any).native = { messages, batch, nextIndex: i } as NativeResume;
         events.push({ type: 'approval', approval: session.pendingApproval });
@@ -745,9 +749,9 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     message: string,
     onEvent?: AgentEventSink,
     signal?: AbortSignal,
-    mode?: 'plan' | 'build',
+    mode?: 'plan' | 'build' | 'auto',
   ): Promise<RuntimeResult> {
-    turnMode = mode === 'plan' ? 'plan' : 'build';
+    turnMode = mode === 'plan' ? 'plan' : mode === 'auto' ? 'auto' : 'build';
     loopGuard = new Map(); // el anti-loop se cuenta por turno
     pendingVerify = false; // la verificación obligatoria también es por turno
     verifyNudged = false;
@@ -764,6 +768,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     approved: boolean,
     onEvent?: AgentEventSink,
     signal?: AbortSignal,
+    scope?: 'once' | 'always',
   ): Promise<RuntimeResult> {
     const pending = session.pendingApproval;
     const resume = (session as any).native as NativeResume | undefined;
@@ -774,6 +779,14 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     }
     session.pendingApproval = null;
     (session as any).native = undefined;
+
+    // "Siempre en este chat": recordamos la tool para no volver a preguntar.
+    if (approved && scope === 'always') {
+      session.autoApproveTools = session.autoApproveTools ?? [];
+      if (!session.autoApproveTools.includes(pending.toolCall.tool)) {
+        session.autoApproveTools.push(pending.toolCall.tool);
+      }
+    }
     const { messages, batch, nextIndex } = resume;
     const tc = batch[nextIndex];
 

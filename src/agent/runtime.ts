@@ -13,12 +13,19 @@ type PendingApproval = {
   reason: string;
 };
 
+/** Modos del chat: plan (solo lee/propone), build (pide permiso para lo
+ *  sensible), auto (omite permisos — el usuario ya lo activó). */
+export type AgentMode = 'plan' | 'build' | 'auto';
+
 export type AgentSession = {
   id: string;
   workspaceRoot: string;
   cwd: string;
   history: HistoryEntry[];
   pendingApproval: PendingApproval | null;
+  /** Tools que el usuario aprobó "siempre en este chat": se auto-aprueban el
+   *  resto de la sesión. Persiste con la sesión (sobrevive recargas del chat). */
+  autoApproveTools?: string[];
 };
 
 type MessageEvent = {
@@ -247,6 +254,7 @@ export function createAgentRuntime(options: RuntimeOptions) {
   }));
   const maxIterations = options.maxIterations ?? 10;
   const maxParseRetries = options.maxParseRetries ?? 2;
+  let turnMode: AgentMode = 'build';
 
   async function callModelWithRepair(session: AgentSession): Promise<import('./types').AgentModelAction> {
     // Compact the running history before every model call so long sessions stay bounded.
@@ -298,7 +306,11 @@ export function createAgentRuntime(options: RuntimeOptions) {
         workspaceRoot: session.workspaceRoot,
       });
 
-      if (decision.requiresApproval) {
+      // Auto = omitir permisos; o si el usuario ya aprobó "siempre" esta tool.
+      const needsApproval = decision.requiresApproval
+        && turnMode !== 'auto'
+        && !(session.autoApproveTools ?? []).includes(action.tool);
+      if (needsApproval) {
         session.pendingApproval = {
           toolCall: action,
           summary: decision.summary,
@@ -349,8 +361,9 @@ export function createAgentRuntime(options: RuntimeOptions) {
     message: string,
     onEvent?: AgentEventSink,
     _signal?: AbortSignal,
-    _mode?: 'plan' | 'build',
+    mode?: AgentMode,
   ): Promise<RuntimeResult> {
+    turnMode = mode ?? 'build';
     session.history.push({ role: 'user', content: message });
     return continueLoop(session, trackedEvents(onEvent));
   }
@@ -360,6 +373,7 @@ export function createAgentRuntime(options: RuntimeOptions) {
     approved: boolean,
     onEvent?: AgentEventSink,
     _signal?: AbortSignal,
+    scope?: 'once' | 'always',
   ): Promise<RuntimeResult> {
     const events = trackedEvents(onEvent);
 
@@ -373,6 +387,14 @@ export function createAgentRuntime(options: RuntimeOptions) {
 
     const pendingApproval = session.pendingApproval;
     session.pendingApproval = null;
+
+    // "Siempre en este chat": recordamos la tool para no volver a preguntar.
+    if (approved && scope === 'always') {
+      session.autoApproveTools = session.autoApproveTools ?? [];
+      if (!session.autoApproveTools.includes(pendingApproval.toolCall.tool)) {
+        session.autoApproveTools.push(pendingApproval.toolCall.tool);
+      }
+    }
 
     if (!approved) {
       session.history.push({

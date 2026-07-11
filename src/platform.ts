@@ -92,8 +92,8 @@ interface PlatformAdapter {
  /** Como sendChat pero entrega cada evento EN VIVO vía onEvent (streaming).
   * Si el streaming no está disponible, cae a sendChat y emite igual por onEvent.
   * El `signal` opcional permite DETENER la respuesta en curso (botón Stop). */
- sendChatStream(message: string, sessionId: string, onEvent: (ev: ChatEvent) => void, signal?: AbortSignal, mode?: 'plan' | 'build'): Promise<ChatResponse>;
- approveActionStream(sessionId: string, approved: boolean, onEvent: (ev: ChatEvent) => void, signal?: AbortSignal): Promise<ChatResponse>;
+ sendChatStream(message: string, sessionId: string, onEvent: (ev: ChatEvent) => void, signal?: AbortSignal, mode?: 'plan' | 'build' | 'auto'): Promise<ChatResponse>;
+ approveActionStream(sessionId: string, approved: boolean, onEvent: (ev: ChatEvent) => void, signal?: AbortSignal, scope?: 'once' | 'always'): Promise<ChatResponse>;
  getChatHistory(sessionId: string): Promise<ChatHistoryResponse>;
  resetChat(sessionId: string): Promise<void>;
  /** Rebobina: trunca la conversación en la userIndex-ésima pregunta del usuario. */
@@ -238,9 +238,9 @@ const webAdapter: PlatformAdapter = {
  return data;
  }
  },
- async approveActionStream(sessionId, approved, onEvent, signal) {
+ async approveActionStream(sessionId, approved, onEvent, signal, scope) {
  try {
- const r = await apiFetch('/api/chat/approval/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, approved }), signal });
+ const r = await apiFetch('/api/chat/approval/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, approved, scope }), signal });
  if (!r.ok || !r.body) throw new Error(`stream ${r.status}`);
  const events = await consumeSse(r, onEvent);
  return { events };
@@ -614,7 +614,7 @@ const capacitorAdapter: PlatformAdapter = {
  persistSessions(capacitorSessions);
  return { events: result.events.map(runtimeEventToChatEvent) };
  },
- async approveActionStream(sessionId, approved, onEvent, signal) {
+ async approveActionStream(sessionId, approved, onEvent, signal, scope) {
  const session = capacitorSessions.get(sessionId);
  if (!session) {
  const ev: ChatEvent = { type: 'message', message: 'Sesión no encontrada.' };
@@ -628,7 +628,7 @@ const capacitorAdapter: PlatformAdapter = {
  return { events: [ev] };
  }
  const runtime = buildCapacitorRuntime(apiKey);
- const result = await runtime.resolveApproval(session, approved, (ev) => onEvent(runtimeEventToChatEvent(ev)), signal);
+ const result = await runtime.resolveApproval(session, approved, (ev) => onEvent(runtimeEventToChatEvent(ev)), signal, scope);
  capacitorSessions.set(sessionId, session);
  persistSessions(capacitorSessions);
  return { events: result.events.map(runtimeEventToChatEvent) };
