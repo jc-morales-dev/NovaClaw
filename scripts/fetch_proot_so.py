@@ -28,6 +28,14 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JNILIBS = os.path.join(PROJECT_ROOT, "android-native", "app", "src", "main", "jniLibs")
 TERMUX_MAIN = "https://packages.termux.dev/apt/termux-main"
 
+# proot está enlazado dinámicamente contra estas libs de Termux. NO viven en el
+# bootstrap mínimo, así que las bajamos y las guardamos como assets por flavor
+# (proot-libs/<flavor>); RuntimeManager.ensureProotLibs las copia al $PREFIX/lib
+# en tiempo de ejecución. Sin ellas proot muere con "library not found".
+PROOT_RUNTIME_DEPS = ["libtalloc", "libandroid-shmem"]
+# ABI de Android → carpeta de flavor de assets (android-native/app/src/<flavor>).
+ABI_TO_FLAVOR = {"arm64-v8a": "arm64", "x86_64": "x86"}
+
 # ABI de Android → arquitectura de Termux.
 ABI_TO_TERMUX = {"arm64-v8a": "aarch64", "x86_64": "x86_64"}
 ALIASES = {"aarch64": "arm64-v8a", "arm64": "arm64-v8a", "x64": "x86_64"}
@@ -116,6 +124,44 @@ def fetch_for_abi(abi: str) -> None:
             print(f"   ✅ {so_name} ({os.path.getsize(dest) // 1024} KB)")
 
 
+def fetch_runtime_deps_for_abi(abi: str) -> None:
+    """Baja libtalloc + libandroid-shmem y las guarda en proot-libs/<flavor>/."""
+    termux_arch = ABI_TO_TERMUX[abi]
+    flavor = ABI_TO_FLAVOR[abi]
+    out_dir = os.path.join(
+        PROJECT_ROOT, "android-native", "app", "src", flavor, "assets", "proot-libs"
+    )
+    os.makedirs(out_dir, exist_ok=True)
+    for pkg in PROOT_RUNTIME_DEPS:
+        url = resolve_pkg_url(pkg, termux_arch)
+        if not url:
+            print(f"   ⚠️  no encontré {pkg} para {termux_arch}")
+            continue
+        deb = parse_ar(http_get(url))
+        data_name = next((k for k in deb if k.startswith("data.tar")), None)
+        with open_inner_tar(data_name, deb[data_name]) as tar:
+            for m in tar.getmembers():
+                n = m.name.lstrip("./")
+                base = os.path.basename(n)
+                if "/lib/" in ("/" + n) and m.isfile() and ".so" in base:
+                    dest = os.path.join(out_dir, base)
+                    with open(dest, "wb") as w:
+                        w.write(tar.extractfile(m).read())
+                    print(f"   ✅ {flavor}/{base} ({os.path.getsize(dest) // 1024} KB)")
+
+
+def resolve_pkg_url(pkg: str, termux_arch: str):
+    pkgs = http_get(
+        f"{TERMUX_MAIN}/dists/stable/main/binary-{termux_arch}/Packages"
+    ).decode("utf-8", "replace")
+    for block in pkgs.split("\n\n"):
+        if any(line.strip() == f"Package: {pkg}" for line in block.splitlines()):
+            for line in block.splitlines():
+                if line.startswith("Filename:"):
+                    return f"{TERMUX_MAIN}/{line.split(':', 1)[1].strip()}"
+    return None
+
+
 def wanted_key(members: dict, path: str):
     """Encuentra la entrada del tar tolerando el prefijo ./ y variantes."""
     for cand in (path, "./" + path, path.lstrip("/")):
@@ -137,6 +183,7 @@ def main() -> None:
     print("📦 Poblando jniLibs con proot (prebuilt de Termux)…")
     for abi in abis:
         fetch_for_abi(abi)
+        fetch_runtime_deps_for_abi(abi)  # libtalloc + libandroid-shmem → proot-libs/
 
     print("\n✅ Listo. jniLibs poblado:")
     for root, _dirs, files in os.walk(JNILIBS):

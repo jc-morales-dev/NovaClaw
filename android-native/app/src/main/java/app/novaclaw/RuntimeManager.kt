@@ -81,6 +81,48 @@ class RuntimeManager(private val context: Context) {
     fun execModeName(): String = execMode.name
 
     /**
+     * proot de Termux está enlazado dinámicamente contra `libtalloc.so.2` y
+     * `libandroid-shmem.so`, que el bootstrap MÍNIMO de NovaClaw no incluye. Sin
+     * ellas, proot muere con "CANNOT LINK EXECUTABLE ... library not found" y el
+     * agente nunca levanta. Copiamos esas libs (empaquetadas como assets por
+     * arquitectura en proot-libs/) al $PREFIX/lib, que está en LD_LIBRARY_PATH.
+     * Idempotente: se salta si ya están (sirve para prefixes ya instalados).
+     */
+    @Volatile private var prootLibsReady = false
+    private fun ensureProotLibs() {
+        if (prootLibsReady) return
+        val prefix = BootstrapInstaller.getPaths(context).prefixDir
+        val libDir = File(prefix, "lib").apply { mkdirs() }
+        try {
+            val assets = context.assets.list("proot-libs") ?: emptyArray()
+            for (name in assets) {
+                val dest = File(libDir, name)
+                if (!dest.exists() || dest.length() == 0L) {
+                    context.assets.open("proot-libs/$name").use { input ->
+                        FileOutputStream(dest).use { out -> input.copyTo(out) }
+                    }
+                }
+                // libtalloc se distribuye como libtalloc.so.2.4.3; el soname que
+                // proot pide es libtalloc.so.2 → crear el enlace (o copia) esperado.
+                if (name.startsWith("libtalloc.so.2.")) {
+                    val soname = File(libDir, "libtalloc.so.2")
+                    if (!soname.exists()) {
+                        try {
+                            android.system.Os.symlink(name, soname.absolutePath)
+                        } catch (_: Throwable) {
+                            dest.copyTo(soname, overwrite = true) // fallback si symlink falla
+                        }
+                    }
+                }
+            }
+            prootLibsReady = true
+            Log.i(TAG, "Libs de proot listas en $libDir")
+        } catch (e: Exception) {
+            Log.e(TAG, "No pude preparar las libs de proot: ${e.message}")
+        }
+    }
+
+    /**
      * Envuelve un argv para que corra bajo el modo activo. En DIRECT lo devuelve
      * tal cual; en PROOT antepone `proot` con sus binds. El `cwd` es el directorio
      * de trabajo del guest.
@@ -89,6 +131,7 @@ class RuntimeManager(private val context: Context) {
         if (execMode == ExecMode.DIRECT) return argv
         val proot = findProotBinary()?.absolutePath
             ?: return argv // no debería pasar (execMode ya lo verificó), pero por las dudas
+        ensureProotLibs()
         val prefix = BootstrapInstaller.getPaths(context).prefixDir
         // proot con root real (/), bindeando el prefix también sobre la ruta
         // canónica de Termux para que cualquier shebang/ruta hardcodeada resuelva.
@@ -100,6 +143,15 @@ class RuntimeManager(private val context: Context) {
             add("-b"); add("/proc")
             add("-b"); add("/sys")
             add("-b"); add("$prefix:$termuxPrefix")
+            // Shebangs de scripts npm/pip: `#!/usr/bin/env node`, `#!/bin/sh`, etc.
+            // Bajo proot NO corre termux-exec (que en modo DIRECT reescribe estos
+            // shebangs), así que bindeamos las rutas absolutas del sistema al
+            // binario real del prefix. Sin esto, toda herramienta CLI instalada
+            // (cowsay, tsc, eslint, etc.) muere con "env: not found".
+            val envBin = File(prefix, "bin/env")
+            if (envBin.exists()) { add("-b"); add("${envBin.absolutePath}:/usr/bin/env") }
+            val shBin = File(prefix, "bin/sh")
+            if (shBin.exists()) { add("-b"); add("${shBin.absolutePath}:/bin/sh") }
             add("-w"); add(cwd)
             addAll(argv)
         }

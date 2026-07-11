@@ -3,6 +3,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- targetSdk 34: Android 14 exige tipo explícito de foreground service. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
@@ -43,7 +45,8 @@
         <!-- Servicio en primer plano que mantiene vivo el agente en background. -->
         <service
             android:name=".NovaClawService"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- Fase 3: provider de Shizuku (control privilegiado del teléfono). -->
         <provider

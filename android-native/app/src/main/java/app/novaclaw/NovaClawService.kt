@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -76,7 +77,14 @@ class NovaClawService : Service() {
 
         port = intent?.getIntExtra(EXTRA_PORT, 8088) ?: 8088
         // Debe llamarse dentro de los ~5s de startForegroundService o el SO mata el servicio.
-        startForeground(NOTIF_ID, buildNotification())
+        // Con targetSdk 34 (Android 14+) el tipo del servicio es OBLIGATORIO acá,
+        // además de declararlo en el manifest — si falta, crashea con
+        // MissingForegroundServiceTypeException.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(NOTIF_ID, buildNotification())
+        }
         acquireWakeLock()
         startAgentIfNeeded()
         // START_STICKY: si el SO lo mata por memoria, lo reintenta cuando puede.
