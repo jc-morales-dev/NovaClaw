@@ -20,6 +20,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var runtime: RuntimeManager
+    private lateinit var distro: DistroManager
     private lateinit var shizuku: ShizukuManager
     private lateinit var connectors: ConnectorBridge
     private val nativeTools by lazy { NativeToolsServer(applicationContext, TokenStore.get(this)) }
@@ -37,6 +38,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         runtime = RuntimeManager(this)
+        distro = DistroManager(this, runtime)
         connectors = ConnectorBridge(this)
         // Servidor de capacidades nativas (cámara/GPS/contactos) para el agente.
         nativeTools.start()
@@ -66,7 +68,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 // Primera instalación: mostrar progreso detallado. Arranques
                 // normales: splash limpio solo con el logo y un spinner.
-                val isFirstRun = !BootstrapInstaller.isBootstrapInstalled(this) || !runtime.isNodeInstalled()
+                val isFirstRun = !BootstrapInstaller.isBootstrapInstalled(this) || !distro.isInstalled()
                 runOnUiThread {
                     val detail = if (isFirstRun) View.VISIBLE else View.GONE
                     binding.progress.visibility = detail
@@ -75,16 +77,19 @@ class MainActivity : AppCompatActivity() {
                     binding.spinner.visibility = if (isFirstRun) View.GONE else View.VISIBLE
                 }
 
+                // El bootstrap mínimo sigue instalado como "toolkit" (aporta tar +
+                // proot para bajar y desempacar la distro glibc completa).
                 if (!BootstrapInstaller.isBootstrapInstalled(this)) {
                     setStatus("Descargando el sistema base…")
                     BootstrapInstaller.install(this) { log("· $it") }
                 }
 
-                if (!runtime.isNodeInstalled()) {
-                    setStatus("Instalando las herramientas…")
-                    if (!runtime.installNode { log("· $it") }) {
-                        throw IllegalStateException("No se pudieron instalar las herramientas.")
-                    }
+                // Entorno Linux COMPLETO (rootfs Ubuntu glibc): el agente y todos
+                // los comandos corren adentro, así cualquier binario de Linux
+                // funciona (opencode, Claude Code, etc.), igual que AnyClaw.
+                if (!distro.isInstalled()) {
+                    setStatus("Instalando el entorno Linux completo…")
+                    distro.install { log("· $it") }
                 }
 
                 setStatus("Preparando tu asistente…")

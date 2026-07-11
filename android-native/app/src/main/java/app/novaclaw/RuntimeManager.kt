@@ -347,53 +347,90 @@ class RuntimeManager(private val context: Context) {
         val paths = BootstrapInstaller.getPaths(context)
         val prefix = paths.prefixDir
         val agentDir = File(paths.filesDir, "agent")
-        val node = "$prefix/bin/node"
-        if (!File(node).exists()) { onLog("Node no está instalado (corré la Fase 2)."); return false }
         if (!File(agentDir, "agent.cjs").exists()) { onLog("Agente no instalado."); return false }
+
+        // Si la distro glibc está instalada, el agente corre ADENTRO de ella
+        // (node glibc real). Si no, cae al node bionic del bootstrap mínimo.
+        val distro = DistroManager(context, this)
+        val useDistro = distro.isInstalled()
+        val bionicNode = "$prefix/bin/node"
+        if (!useDistro && !File(bionicNode).exists()) {
+            onLog("Node no está instalado."); return false
+        }
 
         stopAgent()
 
-        val env = buildEnvironment(paths).toMutableMap()
-        env["NODE_ENV"] = "production"
-        env["PORT"] = port.toString()
-        env["NOVACLAW_DIST"] = "${agentDir.absolutePath}/dist"
-        env["SHELL"] = "$prefix/bin/sh"
-        // Ruta del config del proveedor que la pantalla de Ajustes escribe/lee
-        // (mismo archivo interno que applyProviderConfig prioriza al arrancar).
-        env["NOVACLAW_CONFIG"] = File(paths.filesDir, "novaclaw.config.json").absolutePath
-        // Token secreto: el agente exige X-Nova-Token en /api y /pty, y lo reenvía
-        // al servidor nativo 8099. Sin esto, otra app del teléfono podría hablarle.
-        env["NOVACLAW_TOKEN"] = TokenStore.get(context)
+        // Variables del agente independientes del modo (proveedor/clave/token).
+        val agentVars = mutableMapOf(
+            "NODE_ENV" to "production",
+            "PORT" to port.toString(),
+            // Token secreto: el agente exige X-Nova-Token en /api y /pty, y lo
+            // reenvía al servidor nativo 8099. Sin esto, otra app podría hablarle.
+            "NOVACLAW_TOKEN" to TokenStore.get(context),
+        )
 
-        // Config del proveedor de IA (fuera de git): novaclaw.config.json
-        // { "baseUrl": "...", "model": "..." } — proveedor/URL/modelo (NO secretos).
-        // Se busca en el dir interno y en el external files dir.
+        // Config del proveedor de IA (novaclaw.config.json): baseUrl/model (NO
+        // secretos). Se busca en el dir interno y en el external files dir.
         val configCandidates = listOfNotNull(
             File(paths.filesDir, "novaclaw.config.json"),
             context.getExternalFilesDir(null)?.let { File(it, "novaclaw.config.json") },
         )
-        configCandidates.firstOrNull { it.exists() }?.let { applyProviderConfig(it, env) }
+        configCandidates.firstOrNull { it.exists() }?.let { applyProviderConfig(it, agentVars) }
 
         // ── API key POR PROVEEDOR: cifrada en el Android Keystore (mapa) ────────
-        // Se usa la key del PROVEEDOR ACTUAL. Migraciones: (a) la key única vieja
-        // del Keystore → mapa bajo el provider; (b) una key en texto plano de una
-        // versión anterior o puesta por USB → mapa. El disco nunca guarda la key.
         val provider = readProviderFromConfig(configCandidates)
         SecretStore.migrateLegacy(context, provider)
-        val plain = env["ZEN_API_KEY"]
+        val plain = agentVars["ZEN_API_KEY"]
         if (!plain.isNullOrBlank() && SecretStore.getApiKey(context, provider).isNullOrBlank()) {
             SecretStore.saveApiKey(context, provider, plain)
             Log.i(TAG, "API key migrada de texto plano al Keystore (provider=$provider).")
         }
-        val ksKey = SecretStore.getApiKey(context, provider)
-        env["ZEN_API_KEY"] = ksKey ?: ""
-        // Nunca dejar la key en texto plano en el/los archivos de config.
+        agentVars["ZEN_API_KEY"] = SecretStore.getApiKey(context, provider) ?: ""
         for (f in configCandidates) scrubApiKeyInFile(f)
 
-        val argv = wrapForExec(listOf(node, "${agentDir.absolutePath}/agent.cjs"), paths.homeDir)
+        val argv: List<String>
+        val procEnv: Map<String, String>
+        if (useDistro) {
+            // El agente corre con el node glibc de la distro. Se bindean el bundle
+            // del agente (/opt/nova-agent), los datos config/sessions (/nova-data)
+            // y la home real como workspace (/root), para que TODO persista fuera
+            // del rootfs y sobreviva una reinstalación de la distro.
+            agentVars["HOME"] = "/root"
+            agentVars["SHELL"] = "/bin/bash"
+            agentVars["NOVACLAW_DIST"] = "/opt/nova-agent/dist"
+            agentVars["NOVACLAW_CONFIG"] = "/nova-data/novaclaw.config.json"
+            // El node de Ubuntu usa el CA store del sistema (OpenSSL), que bajo
+            // proot queda sin generar (dpkg no configura ca-certificates) → las
+            // llamadas HTTPS del agente al modelo dan "unable to get local issuer
+            // certificate". Con el CA embebido de Node, el TLS funciona sin depender
+            // de que el paquete ca-certificates se haya configurado bien.
+            agentVars["NODE_OPTIONS"] = "--use-bundled-ca"
+            val binds = listOf(
+                agentDir.absolutePath to "/opt/nova-agent",
+                paths.filesDir to "/nova-data",
+                paths.homeDir to "/root",
+            )
+            argv = distro.enterArgv(
+                listOf("/usr/bin/node", "/opt/nova-agent/agent.cjs"),
+                cwd = "/root",
+                binds = binds,
+                guestEnv = agentVars,
+            )
+            procEnv = prootHostEnv()
+        } else {
+            // Fallback bionic: node del prefix bajo proot directo (código histórico).
+            val env = buildEnvironment(paths).toMutableMap()
+            env.putAll(agentVars)
+            env["NOVACLAW_DIST"] = "${agentDir.absolutePath}/dist"
+            env["SHELL"] = "$prefix/bin/sh"
+            env["NOVACLAW_CONFIG"] = File(paths.filesDir, "novaclaw.config.json").absolutePath
+            argv = wrapForExec(listOf(bionicNode, "${agentDir.absolutePath}/agent.cjs"), paths.homeDir)
+            procEnv = env
+        }
+
         val pb = ProcessBuilder(argv)
         pb.environment().clear()
-        pb.environment().putAll(env)
+        pb.environment().putAll(procEnv)
         pb.directory(File(paths.homeDir))
         pb.redirectErrorStream(true)
 
@@ -469,6 +506,66 @@ class RuntimeManager(private val context: Context) {
     private fun deleteRecursive(f: File) {
         if (f.isDirectory) f.listFiles()?.forEach { deleteRecursive(it) }
         f.delete()
+    }
+
+    // ── Helpers públicos para DistroManager (distro glibc bajo proot) ───────
+
+    fun deleteRecursivePublic(f: File) = deleteRecursive(f)
+    fun prootBinaryPublic(): String? = findProotBinary()?.absolutePath
+    fun ensureProotLibsPublic() = ensureProotLibs()
+
+    /**
+     * Entorno mínimo para que el binario `proot` arranque: encuentra libtalloc/
+     * libandroid-shmem (LD_LIBRARY_PATH) y sus loaders. Es el entorno del HOST
+     * (no el del guest, que se pasa aparte con `env -i` adentro).
+     */
+    private fun prootHostEnv(): Map<String, String> {
+        val paths = BootstrapInstaller.getPaths(context)
+        val prefix = paths.prefixDir
+        val env = mutableMapOf(
+            "HOME" to paths.homeDir,
+            "PATH" to "$prefix/bin:$prefix/bin/applets:/system/bin",
+            "LD_LIBRARY_PATH" to "$prefix/lib",
+            "TMPDIR" to paths.tmpDir,
+            "TMP" to paths.tmpDir,
+            "PROOT_TMP_DIR" to paths.tmpDir,
+            "TERM" to "xterm-256color",
+        )
+        File(nativeLibDir, PROOT_LOADER_LIB).takeIf { it.exists() }
+            ?.let { env["PROOT_LOADER"] = it.absolutePath }
+        File(nativeLibDir, PROOT_LOADER32_LIB).takeIf { it.exists() }
+            ?.let { env["PROOT_LOADER_32"] = it.absolutePath }
+        return env
+    }
+
+    /** Corre un argv arbitrario con el entorno de proot y captura stdout+stderr. */
+    fun runArgv(argv: List<String>, onLine: (String) -> Unit = {}): Result {
+        val paths = BootstrapInstaller.getPaths(context)
+        val pb = ProcessBuilder(argv)
+        pb.environment().clear()
+        pb.environment().putAll(prootHostEnv())
+        pb.directory(File(paths.homeDir))
+        pb.redirectErrorStream(true)
+        val sb = StringBuilder()
+        return try {
+            val proc = pb.start()
+            BufferedReader(InputStreamReader(proc.inputStream)).use { r ->
+                var l = r.readLine()
+                while (l != null) { Log.d(TAG, l); onLine(l); sb.appendLine(l); l = r.readLine() }
+            }
+            Result(proc.waitFor(), sb.toString().trim())
+        } catch (e: Exception) {
+            Log.e(TAG, "Error corriendo argv", e)
+            Result(-1, "ERROR: ${e.message}\n$sb".trim())
+        }
+    }
+
+    /** Corre el binario `proot` directamente (p. ej. para extraer el rootfs). */
+    fun runRawProot(args: List<String>, onLine: (String) -> Unit = {}): Result {
+        ensureProotLibs()
+        val proot = findProotBinary()?.absolutePath
+            ?: return Result(-1, "proot no disponible en $nativeLibDir")
+        return runArgv(listOf(proot) + args, onLine)
     }
 
     /**
