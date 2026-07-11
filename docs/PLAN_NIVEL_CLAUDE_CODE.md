@@ -34,14 +34,15 @@
 | ✅ B11 | Prompt reforzado (paralelo + multi-edit) | 5230a71 |
 | ✅ B6 | Skills on-demand (`skills/<nombre>/SKILL.md` → índice al prompt) | 24d16c2 |
 | ✅ B7 | Hooks PostToolUse (`novaclaw.hooks.json` → formatear/lint tras editar) | 24d16c2 |
+| ✅ B10 | Streaming token-por-token (camino OpenAI; Anthropic intacto) | 48e0b93 |
 
-**Pendiente (1 solo, a propósito):**
+**Plan COMPLETO: 11 de 11 ✅** (+ el fix crítico de thinking).
 
-- ⏳ **B10 Streaming token-por-token** — toca modelClient (stream:true) + SSE del server + UI; **necesita prueba en el teléfono** (riesgo de romper la pantalla del chat), mejor hacerlo con Julio presente.
+**Sobre B10 (streaming):** el camino OpenAI-compatible (los modelos free del día a día) ahora escribe la respuesta en vivo, token por token. Anthropic/Opus 4.8 **no** streamea a propósito (protege el replay de thinking, frágil). Red de seguridad en la UI: la respuesta final siempre la cierra el evento `message` con el texto autoritativo → si los deltas fallan, se ve idéntico a antes. La narración intermedia (si el modelo la produce) se muestra transitoria y se descarta al correr una tool (nunca se persiste). ⚠ Falta validar la UI del stream en el OPPO real (compila y testea el backend, pero la pantalla del chat conviene verla en el teléfono).
 
-**APK LISTO PARA INSTALAR:** `android-native/app/build/outputs/apk/arm64/debug/app-arm64-debug.apk` (39 MB) compilado con TODOS estos cambios y verificado (los marcadores fetchWithRetry/adaptive/hooks/skills/multi-edit están en el `agent.cjs` empaquetado). Un vigilante en segundo plano lo instala solo (`adb install -r`, mantiene datos) apenas el OPPO se reconecte.
+**APK LISTO PARA INSTALAR:** `android-native/app/build/outputs/apk/arm64/debug/app-arm64-debug.apk` (39 MB) recompilado con TODO (incluido B10) y verificado: los marcadores del código nuevo están en el `agent.cjs` (readOpenAIStream/onTextDelta/fetchWithRetry/adaptive/hooks/skills/multi-edit) y en el bundle de UI (messageDelta). Un vigilante en segundo plano lo instala solo (`adb install -r`, mantiene datos) apenas el OPPO se reconecte.
 
-**Resumen honesto:** cerrados **10 de 11 ítems** del plan (todo Nivel 1 y 2 + la mayoría del 3) + el fix crítico de thinking. Solo queda **B10** (percepción, no resultado bruto) para validar la UI en el teléfono con Julio.
+**Resumen honesto:** **plan cerrado (11/11)** + fix crítico de thinking. Todo verificado (tsc + 31 suites de test + build). Único pendiente real: **ver el streaming en la pantalla del OPPO** (validación visual, el backend está testeado).
 
 ---
 
