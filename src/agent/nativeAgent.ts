@@ -203,6 +203,15 @@ function buildBaseMessages(session: AgentSession): AgentMessage[] {
 // Umbrales de compactación inteligente (resumen por el modelo).
 const SUMMARIZE_THRESHOLD = 44; // si el historial supera esto, resumimos
 const SUMMARIZE_KEEP_RECENT = 16; // últimas entradas que se dejan verbatim
+// B9: además del conteo de entradas, compactar cuando el contexto estimado en
+// tokens (≈ chars/4) se acerca a la ventana, para no reventarla con pocos
+// mensajes pero enormes (lecturas grandes, salidas largas de terminal).
+const TOKEN_COMPACT_THRESHOLD = 100_000;
+function estimateHistoryTokens(history: { content: string }[]): number {
+  let chars = 0;
+  for (const e of history) chars += e.content?.length ?? 0;
+  return Math.ceil(chars / 4);
+}
 
 // En modo PLAN, estas tools quedan bloqueadas (el agente solo lee/analiza).
 const PLAN_BLOCKED_TOOLS = new Set(['file_write', 'file_edit', 'file_edit_multi', 'workspace_mkdir', 'terminal_run', 'subagent_run']);
@@ -274,7 +283,8 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
    * perder el hilo en sesiones largas. Si el resumen falla, cae al recorte simple.
    */
   async function compactWithSummary(session: AgentSession): Promise<void> {
-    if (session.history.length <= SUMMARIZE_THRESHOLD) return;
+    if (session.history.length <= SUMMARIZE_THRESHOLD
+      && estimateHistoryTokens(session.history) < TOKEN_COMPACT_THRESHOLD) return;
 
     const firstUser = session.history.find((e) => e.role === 'user');
     const recent = session.history.slice(-SUMMARIZE_KEEP_RECENT);

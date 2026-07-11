@@ -104,6 +104,33 @@ const noopExecutor = async (call) => ({
   assert.ok(hasSummary, 'debe quedar una entrada de resumen');
 }
 
+// ── B9: compacta por TOKENS aunque haya pocas entradas (pero enormes) ─────────
+{
+  let summaryAsked = false;
+  const fakeModel = async ({ system }) => {
+    if (/compress a coding-agent conversation/i.test(system ?? '')) {
+      summaryAsked = true;
+      return { text: 'RESUMEN.' };
+    }
+    return { text: 'Respuesta final.' };
+  };
+  const runtime = createNativeAgentRuntime({
+    workspaceRoot: os.tmpdir(),
+    getConfig: () => ({ providerId: 'x', apiKey: 'x', model: 'm' }),
+    executeToolCall: noopExecutor,
+    callModel: fakeModel,
+  });
+  const session = createAgentSession('bigtokens', os.tmpdir());
+  // Pocas entradas (30 < umbral 44) pero ENORMES: ~112k tokens > umbral 100k.
+  for (let i = 0; i < 30; i++) {
+    session.history.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: 'x'.repeat(15000) });
+  }
+  const before = session.history.length;
+  await runtime.runUserTurn(session, 'seguí');
+  assert.ok(summaryAsked, 'debe compactar por tokens aunque haya pocas entradas');
+  assert.ok(session.history.length < before, `debe encogerse (antes ${before}, ahora ${session.history.length})`);
+}
+
 // ── narración intermedia NO se muestra ni se guarda: una sola respuesta final ──
 {
   // Turno 1: el modelo "narra" (texto) mientras llama una tool. Turno 2: idem.
