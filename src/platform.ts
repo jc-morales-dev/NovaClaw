@@ -24,6 +24,7 @@ import { createBootstrapStatus, type BootstrapStatus } from './bootstrap/state';
 
 type ChatEvent =
  | { type: 'message'; message: string }
+ | { type: 'messageDelta'; delta: string }
  | { type: 'toolExecution'; toolExecution: { name: string; command: string; status: 'success' | 'error'; output?: string } }
  | { type: 'approval'; approval: { summary: string; reason: string; toolCall: { tool: string; arguments: Record<string, unknown> } } }
  | { type: 'todo'; todos: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' }> };
@@ -435,6 +436,7 @@ async function hasApiKeyNative(): Promise<boolean> {
 
 function runtimeEventToChatEvent(ev: AgentRuntimeEvent): ChatEvent {
  if (ev.type === 'message') return { type: 'message', message: ev.message };
+ if (ev.type === 'messageDelta') return { type: 'messageDelta', delta: ev.delta };
  if (ev.type === 'toolExecution')
  return { type: 'toolExecution', toolExecution: { name: ev.toolExecution.name, command: ev.toolExecution.command, status: ev.toolExecution.status, output: ev.toolExecution.output } };
  if (ev.type === 'todo') return { type: 'todo', todos: ev.todos };

@@ -134,6 +134,72 @@ function supportsAdaptiveThinking(model: string): boolean {
   return /(opus-4-[678]|sonnet-4-6|sonnet-5|fable-5|mythos-5)\b/.test(model.toLowerCase());
 }
 
+// ── Streaming SSE del camino OpenAI (B10) ────────────────────────────────────
+/**
+ * Lee el stream de /chat/completions (formato OpenAI), acumula texto y tool_calls
+ * por índice, y llama onTextDelta por cada fragmento de texto. Devuelve el mismo
+ * ModelReply que el camino sin streaming, así el loop del agente no cambia.
+ */
+async function readOpenAIStream(res: Response, onTextDelta?: (delta: string) => void): Promise<ModelReply> {
+  const reader = res.body?.getReader?.();
+  if (!reader) {
+    // Sin cuerpo legible: caemos al parseo JSON normal (por si un proxy no streamea).
+    const data = await res.json();
+    const message = data.choices?.[0]?.message ?? {};
+    const text = (message.content ?? '').trim();
+    const toolCalls = (message.tool_calls ?? []).map((tc: any) => {
+      let args: Record<string, any> = {};
+      try { args = JSON.parse(tc.function?.arguments || '{}'); } catch { args = {}; }
+      return { id: tc.id, name: tc.function?.name, args };
+    });
+    return { text: text || undefined, toolCalls: toolCalls.length ? toolCalls : undefined };
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let content = '';
+  const toolAcc: Record<number, { id?: string; name?: string; args: string }> = {};
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      let chunk: any;
+      try { chunk = JSON.parse(payload); } catch { continue; }
+      const delta = chunk.choices?.[0]?.delta;
+      if (!delta) continue;
+      if (typeof delta.content === 'string' && delta.content) {
+        content += delta.content;
+        try { onTextDelta?.(delta.content); } catch { /* un sink roto no frena el stream */ }
+      }
+      for (const tc of delta.tool_calls ?? []) {
+        const i = typeof tc.index === 'number' ? tc.index : 0;
+        const acc = toolAcc[i] ?? (toolAcc[i] = { args: '' });
+        if (tc.id) acc.id = tc.id;
+        if (tc.function?.name) acc.name = tc.function.name;
+        if (tc.function?.arguments) acc.args += tc.function.arguments;
+      }
+    }
+  }
+
+  const toolCalls = Object.values(toolAcc)
+    .map((a) => {
+      let args: Record<string, any> = {};
+      try { args = JSON.parse(a.args || '{}'); } catch { args = {}; }
+      return { id: a.id ?? '', name: a.name ?? '', args };
+    })
+    .filter((t) => t.name);
+  const text = content.trim();
+  return { text: text || undefined, toolCalls: toolCalls.length ? toolCalls : undefined };
+}
+
 /** Marca el último bloque del último mensaje con cache_control, para cachear el
  *  prefijo del historial que crece en cada vuelta del loop (patrón multi-turno). */
 function tagLastMessageForCache(messages: any[]): void {
@@ -286,6 +352,10 @@ export async function callModelWithTools(input: {
   abortSignal?: AbortSignal;
   /** Llamada de texto puro (sin tools ni thinking): p.ej. generar un título. */
   noTools?: boolean;
+  /** B10: si viene, el camino OpenAI-compatible streamea y llama esto por cada
+   *  fragmento de texto (para escribir la respuesta en vivo). Anthropic NO
+   *  streamea (protege el replay de thinking) y este callback no se usa ahí. */
+  onTextDelta?: (delta: string) => void;
 }): Promise<ModelReply> {
   const provider = getProvider(input.providerId);
   if (!provider) throw new Error(`Proveedor desconocido: ${input.providerId}`);
@@ -373,6 +443,9 @@ export async function callModelWithTools(input: {
     body.tools = toOpenAITools(exclude, extra);
     body.tool_choice = 'auto';
   }
+  // B10: streamear en vivo cuando el llamador lo pide (respuesta token-por-token).
+  const wantsStream = typeof input.onTextDelta === 'function';
+  if (wantsStream) body.stream = true;
   // OpenAI/OpenRouter/DeepSeek cachean el prefijo solos (server-side), sin parámetro.
   const res = await fetchWithRetry(`${provider.baseUrl}/chat/completions`, {
     method: 'POST',
@@ -380,6 +453,9 @@ export async function callModelWithTools(input: {
     body: JSON.stringify(body),
   }, { timeoutMs, abortSignal: input.abortSignal });
   if (!res.ok) throw new Error(`Modelo ${res.status}: ${await res.text()}`);
+  if (wantsStream) {
+    return readOpenAIStream(res, input.onTextDelta);
+  }
   const data = await res.json();
   const message = data.choices?.[0]?.message ?? {};
   const text = (message.content ?? '').trim();

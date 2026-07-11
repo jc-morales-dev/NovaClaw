@@ -26,6 +26,14 @@ type MessageEvent = {
   message: string;
 };
 
+// B10: fragmento de texto de la respuesta en vivo (streaming token-por-token).
+// La UI lo va appendeando a una burbuja "en curso"; el evento 'message' final la
+// finaliza con el texto completo (así, si los deltas fallan, igual se ve bien).
+type MessageDeltaEvent = {
+  type: 'messageDelta';
+  delta: string;
+};
+
 type ToolExecutionEvent = {
   type: 'toolExecution';
   toolExecution: ToolExecutionResult;
@@ -43,7 +51,7 @@ type TodoEvent = {
   todos: TodoItem[];
 };
 
-export type AgentRuntimeEvent = MessageEvent | ToolExecutionEvent | ApprovalEvent | TodoEvent;
+export type AgentRuntimeEvent = MessageEvent | MessageDeltaEvent | ToolExecutionEvent | ApprovalEvent | TodoEvent;
 
 export type AgentEventSink = (event: AgentRuntimeEvent) => void;
 

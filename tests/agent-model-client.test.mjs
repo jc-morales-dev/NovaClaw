@@ -19,6 +19,23 @@ function fakeRes(status, body, headers = {}) {
 const anthropicOk = { content: [{ type: 'text', text: 'listo' }] };
 const openaiOk = { choices: [{ message: { content: 'listo' } }] };
 
+// Respuesta SSE simulada (body = ReadableStream de chunks 'data: ...\n\n').
+function sseRes(chunks) {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      for (const c of chunks) controller.enqueue(encoder.encode(c));
+      controller.close();
+    },
+  });
+  return {
+    ok: true, status: 200, body,
+    headers: { get: () => null },
+    json: async () => ({}), text: async () => '',
+  };
+}
+const sse = (obj) => `data: ${JSON.stringify(obj)}\n\n`;
+
 // Stub de globalThis.fetch que graba cada llamada y responde según una cola.
 function stubFetch(queue) {
   const calls = [];
@@ -92,6 +109,39 @@ test('anthropic Haiku 4.5: budget_tokens + interleaved beta', async () => {
     assert.equal(body.thinking.type, 'enabled');
     assert.ok(body.thinking.budget_tokens > 0);
     assert.equal(headers['anthropic-beta'], 'interleaved-thinking-2025-05-14');
+  } finally { restore(); }
+});
+
+// ── B10: camino OpenAI streamea — onTextDelta recibe fragmentos, arma texto+tools ─
+test('OpenAI streaming: onTextDelta + acumula texto y tool_calls', async () => {
+  const chunks = [
+    sse({ choices: [{ delta: { content: 'Hola' } }] }),
+    sse({ choices: [{ delta: { content: ' mundo' } }] }),
+    sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'terminal_run', arguments: '{"comm' } }] } }] }),
+    sse({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'and":"ls"}' } }] } }] }),
+    'data: [DONE]\n\n',
+  ];
+  const { calls, restore } = stubFetch([sseRes(chunks)]);
+  try {
+    const deltas = [];
+    const reply = await callModelWithTools({ ...baseInput, providerId: 'nvidia', model: 'x/y', onTextDelta: (d) => deltas.push(d) });
+    assert.deepEqual(deltas, ['Hola', ' mundo'], 'debe emitir cada fragmento en vivo');
+    assert.equal(reply.text, 'Hola mundo');
+    assert.equal(reply.toolCalls?.[0]?.name, 'terminal_run');
+    assert.deepEqual(reply.toolCalls?.[0]?.args, { command: 'ls' }, 'arma los args tool_call desde deltas');
+    assert.equal(calls[0].body.stream, true, 'el request debe pedir stream:true');
+  } finally { restore(); }
+});
+
+// ── B10: Anthropic NO streamea (protege el replay de thinking) ────────────────
+test('Anthropic ignora onTextDelta (no streamea)', async () => {
+  const { calls, restore } = stubFetch([fakeRes(200, anthropicOk)]);
+  try {
+    const deltas = [];
+    const reply = await callModelWithTools({ ...baseInput, providerId: 'anthropic', model: 'claude-opus-4-8', onTextDelta: (d) => deltas.push(d) });
+    assert.equal(deltas.length, 0, 'Anthropic no debe emitir deltas');
+    assert.equal(reply.text, 'listo');
+    assert.equal(calls[0].body.stream, undefined, 'el body de Anthropic no lleva stream');
   } finally { restore(); }
 });
 

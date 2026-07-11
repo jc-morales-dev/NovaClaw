@@ -446,6 +446,9 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
           messages,
           abortSignal: signal,
           extraTools: mcpExtraTools(),
+          // B10: streaming en vivo (solo camino OpenAI). Cada fragmento se emite
+          // como messageDelta; la UI lo escribe y el 'message' final lo cierra.
+          onTextDelta: (delta) => { events.push({ type: 'messageDelta', delta }); },
         });
       } catch (error: any) {
         if (signal?.aborted) {

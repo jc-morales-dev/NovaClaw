@@ -59,12 +59,20 @@ export interface Message {
   toolExecution?: ToolExecutionMessage;
   approvalRequest?: ApprovalRequestMessage;
   todos?: TodoItem[];
+  /** B10: burbuja "en curso" que se va escribiendo con los deltas del stream.
+   *  Mientras streaming=true se muestra como texto plano (sin markdown a medias);
+   *  el evento 'message' final la cierra con el texto completo (markdown). */
+  streaming?: boolean;
 }
 
 type ServerEvent =
   | {
       type: 'message';
       message: string;
+    }
+  | {
+      type: 'messageDelta';
+      delta: string;
     }
   | {
       type: 'toolExecution';
@@ -587,10 +595,28 @@ export default function ChatView() {
   function appendServerEvents(events: ServerEvent[]) {
     setMessages((prev) => {
       let next = [...prev];
+      // ¿La última burbuja es un stream "en curso"? (B10)
+      const liveIdx = () => (next.length && next[next.length - 1].streaming ? next.length - 1 : -1);
+      // Descarta la burbuja en curso: el texto que se venía escribiendo era
+      // narración intermedia (antes de una tool) → no se persiste.
+      const dropLive = () => { if (liveIdx() !== -1) next = next.slice(0, -1); };
+
       for (const event of events) {
+        // B10: fragmento de texto en vivo → lo appendeamos a la burbuja en curso
+        // (o creamos una nueva). Se muestra como texto plano hasta que se cierra.
+        if (event.type === 'messageDelta') {
+          const i = liveIdx();
+          if (i !== -1) {
+            next[i] = { ...next[i], content: (next[i].content ?? '') + event.delta };
+          } else {
+            next.push({ id: nextMessageId(), role: 'assistant', content: event.delta, streaming: true });
+          }
+          continue;
+        }
         // El plan de tareas es una tarjeta VIVA: si ya hay una en la
         // conversación, la actualizamos in-place en vez de apilar otra.
         if (event.type === 'todo') {
+          dropLive();
           const idx = [...next].reverse().findIndex((m) => m.todos);
           if (idx !== -1) {
             const realIdx = next.length - 1 - idx;
@@ -601,11 +627,21 @@ export default function ChatView() {
           continue;
         }
         if (event.type === 'toolExecution') {
+          dropLive();
           next.push({ id: nextMessageId(), role: 'assistant', toolExecution: event.toolExecution });
         } else if (event.type === 'approval') {
+          dropLive();
           next.push({ id: nextMessageId(), role: 'assistant', approvalRequest: { ...event.approval, status: 'pending' } });
         } else {
-          next.push({ id: nextMessageId(), role: 'assistant', content: event.message });
+          // 'message' final: si hay una burbuja en curso, la CERRAMOS con el texto
+          // autoritativo (markdown). Si no hubo deltas (p.ej. Anthropic sin stream),
+          // se apila normal — comportamiento idéntico al de antes.
+          const i = liveIdx();
+          if (i !== -1) {
+            next[i] = { ...next[i], content: event.message, streaming: false };
+          } else {
+            next.push({ id: nextMessageId(), role: 'assistant', content: event.message });
+          }
         }
       }
       return next;
@@ -977,29 +1013,37 @@ export default function ChatView() {
                   </span>
                   <span className="text-[12.5px] font-semibold text-zinc-400 tracking-wide">NovaClaw</span>
                 </div>
-                <div className="prose prose-invert max-w-none min-w-0 break-words pl-7 text-[15px] leading-relaxed prose-p:leading-relaxed prose-p:my-2 prose-headings:font-semibold prose-pre:bg-[#0D0D0D] prose-pre:border prose-pre:border-white/10 prose-pre:rounded-xl prose-code:text-[#FFC58A] prose-code:before:content-none prose-code:after:content-none prose-a:text-[#FFB25C]">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm, remarkMath]}
-                    rehypePlugins={[rehypeKatex]}
-                    components={{
-                      // Las tablas anchas scrollean DENTRO de su propio contenedor
-                      // en vez de estirar toda la pantalla hacia los lados.
-                      table: (props) => (
-                        <div className="max-w-full overflow-x-auto">
-                          <table {...props} />
-                        </div>
-                      ),
-                    }}
-                  >
-                    {msg.content || ''}
-                  </ReactMarkdown>
-                </div>
-                {msg.content && msg.content.trim() && <CopyButton text={msg.content} />}
+                {msg.streaming ? (
+                  // B10: mientras streamea, texto plano + cursor (sin markdown a medias).
+                  <div className="pl-7 text-[15px] leading-relaxed text-zinc-200 whitespace-pre-wrap break-words">
+                    {msg.content}
+                    <span className="inline-block w-[2px] h-[1.05em] align-[-0.15em] ml-0.5 bg-[#FFB25C] animate-pulse" />
+                  </div>
+                ) : (
+                  <div className="prose prose-invert max-w-none min-w-0 break-words pl-7 text-[15px] leading-relaxed prose-p:leading-relaxed prose-p:my-2 prose-headings:font-semibold prose-pre:bg-[#0D0D0D] prose-pre:border prose-pre:border-white/10 prose-pre:rounded-xl prose-code:text-[#FFC58A] prose-code:before:content-none prose-code:after:content-none prose-a:text-[#FFB25C]">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm, remarkMath]}
+                      rehypePlugins={[rehypeKatex]}
+                      components={{
+                        // Las tablas anchas scrollean DENTRO de su propio contenedor
+                        // en vez de estirar toda la pantalla hacia los lados.
+                        table: (props) => (
+                          <div className="max-w-full overflow-x-auto">
+                            <table {...props} />
+                          </div>
+                        ),
+                      }}
+                    >
+                      {msg.content || ''}
+                    </ReactMarkdown>
+                  </div>
+                )}
+                {!msg.streaming && msg.content && msg.content.trim() && <CopyButton text={msg.content} />}
               </div>
             );
           })}
 
-          {isTyping && (
+          {isTyping && !messages[messages.length - 1]?.streaming && (
             <div className="w-full">
               <div className="flex items-center gap-2 mb-2">
                 <span className="w-5 h-5 rounded-full bg-gradient-to-br from-[#FF7A1A] to-amber-400 flex items-center justify-center">
