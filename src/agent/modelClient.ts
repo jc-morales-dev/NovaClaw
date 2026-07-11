@@ -61,6 +61,88 @@ function authHeaders(providerId: string, apiKey: string): Record<string, string>
   };
 }
 
+// ── Reintentos con backoff (B2) ─────────────────────────────────────────────
+// Errores transitorios (rate limit, sobrecarga, 5xx, caídas de red) se reintentan
+// con espera creciente; los definitivos (400/401/403/404) NO. Clave en el celular,
+// donde la red se corta seguido: la diferencia entre "terminó" y "se cortó".
+const RETRYABLE_STATUS = new Set([408, 409, 429, 500, 502, 503, 529]);
+const DEFAULT_MAX_RETRIES = 3;
+
+/** Espera cancelable: se corta si el usuario toca Detener (abortSignal). */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+  });
+}
+
+/** Retry-After (segundos o fecha HTTP) → milisegundos, o null si no vino. */
+function parseRetryAfterMs(value: string | null): number | null {
+  if (!value) return null;
+  const secs = Number(value);
+  if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
+  const date = Date.parse(value);
+  if (!Number.isNaN(date)) return Math.max(0, date - Date.now());
+  return null;
+}
+
+/** Backoff exponencial con jitter: 0.5s, 1s, 2s… tope 8s. */
+function backoffMs(attempt: number): number {
+  return Math.min(500 * 2 ** attempt, 8000) + Math.floor(Math.random() * 250);
+}
+
+/**
+ * fetch con reintentos. Cada intento tiene su propio timeout; si el usuario aborta
+ * cortamos limpio (sin reintentar). Devuelve la Response tal cual para status no
+ * reintentables (el caller lee el body del error) o cuando se agotan los reintentos.
+ */
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  opts: { timeoutMs: number; abortSignal?: AbortSignal; maxRetries?: number },
+): Promise<Response> {
+  const maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
+  let attempt = 0;
+  for (;;) {
+    if (opts.abortSignal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const timeoutSignal = AbortSignal.timeout(opts.timeoutMs);
+    const signal = opts.abortSignal ? AbortSignal.any([timeoutSignal, opts.abortSignal]) : timeoutSignal;
+    let res: Response;
+    try {
+      res = await fetch(url, { ...init, signal });
+    } catch (error) {
+      // El usuario tocó Detener → no reintentar. Timeout/caída de red → sí.
+      if (opts.abortSignal?.aborted || attempt >= maxRetries) throw error;
+      await sleep(backoffMs(attempt), opts.abortSignal);
+      attempt += 1;
+      continue;
+    }
+    if (res.ok || !RETRYABLE_STATUS.has(res.status) || attempt >= maxRetries) return res;
+    const retryAfter = parseRetryAfterMs(res.headers.get('retry-after'));
+    try { await res.text(); } catch { /* descartar el body antes de reintentar */ }
+    await sleep(retryAfter ?? backoffMs(attempt), opts.abortSignal);
+    attempt += 1;
+  }
+}
+
+// ── Prompt caching de Anthropic (B1) ────────────────────────────────────────
+/** Claude 4.6+ / Sonnet 5 / Fable 5 usan adaptive thinking; el viejo
+ *  budget_tokens los hace fallar con 400 (por eso Opus 4.8 corría SIN pensar).
+ *  Los previos (Haiku 4.5, Sonnet 4.5…) siguen con budget_tokens. */
+function supportsAdaptiveThinking(model: string): boolean {
+  return /(opus-4-[678]|sonnet-4-6|sonnet-5|fable-5|mythos-5)\b/.test(model.toLowerCase());
+}
+
+/** Marca el último bloque del último mensaje con cache_control, para cachear el
+ *  prefijo del historial que crece en cada vuelta del loop (patrón multi-turno). */
+function tagLastMessageForCache(messages: any[]): void {
+  const last = messages[messages.length - 1];
+  if (!last || !Array.isArray(last.content) || last.content.length === 0) return;
+  const block = last.content[last.content.length - 1];
+  if (block && typeof block === 'object') block.cache_control = { type: 'ephemeral' };
+}
+
 /** Verifica la key llamando al /models real del proveedor y devuelve la lista. */
 export async function verifyAndListModels(
   providerId: string,
@@ -208,47 +290,60 @@ export async function callModelWithTools(input: {
   const provider = getProvider(input.providerId);
   if (!provider) throw new Error(`Proveedor desconocido: ${input.providerId}`);
   const headers = authHeaders(input.providerId, input.apiKey);
-  const timeoutSignal = AbortSignal.timeout(input.timeoutMs ?? 180000);
-  // Cancela por timeout O por el botón Detener del usuario.
-  const signal = input.abortSignal
-    ? AbortSignal.any([timeoutSignal, input.abortSignal])
-    : timeoutSignal;
+  const timeoutMs = input.timeoutMs ?? 180000;
   const exclude = input.excludeTools ?? [];
   const extra = input.extraTools ?? [];
   const noTools = Boolean(input.noTools);
 
   if (provider.apiFormat === 'anthropic') {
     const maxTokens = input.maxTokens ?? ANTHROPIC_MAX_TOKENS;
+    // El resumen/título es one-off: cachearlo sería puro costo de escritura sin lecturas.
+    const useCache = !noTools;
+    const adaptive = supportsAdaptiveThinking(input.model);
+
+    // Prompt caching (B1): el system va como bloque con cache_control → cachea
+    // tools+system juntos (orden de render tools→system→messages). Necesita
+    // prefijo ≥4096 tokens en Opus 4.8; si es menor, la API lo ignora sin error.
+    const systemParam = useCache
+      ? [{ type: 'text', text: input.system, cache_control: { type: 'ephemeral' } }]
+      : input.system;
 
     async function callAnthropic(withThinking: boolean): Promise<Response> {
+      const messages = toAnthropicMessages(input.messages);
+      // Cachea el prefijo del historial que crece en cada vuelta del loop agéntico.
+      if (useCache) tagLastMessageForCache(messages);
       const body: Record<string, any> = {
         model: input.model,
         max_tokens: maxTokens,
-        system: input.system,
-        messages: toAnthropicMessages(input.messages),
+        system: systemParam,
+        messages,
       };
       if (!noTools) body.tools = toAnthropicTools(exclude, extra);
       let callHeaders = headers;
       if (withThinking && !noTools) {
-        body.thinking = { type: 'enabled', budget_tokens: ANTHROPIC_THINKING_BUDGET };
-        // interleaved thinking: el modelo puede razonar TAMBIÉN entre tool calls.
-        callHeaders = { ...headers, 'anthropic-beta': 'interleaved-thinking-2025-05-14' };
+        if (adaptive) {
+          // Claude 4.6+ / Sonnet 5 / Fable 5: adaptive (interleaved va incluido, sin beta header).
+          body.thinking = { type: 'adaptive' };
+        } else {
+          // Modelos previos (Haiku 4.5, etc.): budget_tokens + interleaved por header.
+          body.thinking = { type: 'enabled', budget_tokens: ANTHROPIC_THINKING_BUDGET };
+          callHeaders = { ...headers, 'anthropic-beta': 'interleaved-thinking-2025-05-14' };
+        }
       }
-      return fetch(`${provider!.baseUrl}/messages`, {
+      return fetchWithRetry(`${provider!.baseUrl}/messages`, {
         method: 'POST',
         headers: callHeaders,
-        signal,
         body: JSON.stringify(body),
-      });
+      }, { timeoutMs, abortSignal: input.abortSignal });
     }
 
     let res = await callAnthropic(true);
     if (res.status === 400) {
-      // Modelos Claude viejos sin extended thinking: reintentar sin razonamiento.
+      // Modelos sin extended thinking (o config no soportada): reintentar sin razonamiento.
       const errText = await res.text();
       if (/thinking/i.test(errText)) {
         res = await callAnthropic(false);
-      } else if (!res.ok) {
+      } else {
         throw new Error(`Anthropic 400: ${errText}`);
       }
     }
@@ -278,12 +373,12 @@ export async function callModelWithTools(input: {
     body.tools = toOpenAITools(exclude, extra);
     body.tool_choice = 'auto';
   }
-  const res = await fetch(`${provider.baseUrl}/chat/completions`, {
+  // OpenAI/OpenRouter/DeepSeek cachean el prefijo solos (server-side), sin parámetro.
+  const res = await fetchWithRetry(`${provider.baseUrl}/chat/completions`, {
     method: 'POST',
     headers,
-    signal,
     body: JSON.stringify(body),
-  });
+  }, { timeoutMs, abortSignal: input.abortSignal });
   if (!res.ok) throw new Error(`Modelo ${res.status}: ${await res.text()}`);
   const data = await res.json();
   const message = data.choices?.[0]?.message ?? {};

@@ -191,7 +191,7 @@ const SUMMARIZE_THRESHOLD = 44; // si el historial supera esto, resumimos
 const SUMMARIZE_KEEP_RECENT = 16; // últimas entradas que se dejan verbatim
 
 // En modo PLAN, estas tools quedan bloqueadas (el agente solo lee/analiza).
-const PLAN_BLOCKED_TOOLS = new Set(['file_write', 'file_edit', 'workspace_mkdir', 'terminal_run', 'subagent_run']);
+const PLAN_BLOCKED_TOOLS = new Set(['file_write', 'file_edit', 'file_edit_multi', 'workspace_mkdir', 'terminal_run', 'subagent_run']);
 function isPlanBlocked(name: string): boolean {
   return PLAN_BLOCKED_TOOLS.has(name) || isMcpToolName(name);
 }

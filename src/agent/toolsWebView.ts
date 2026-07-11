@@ -14,6 +14,7 @@ import {
   MAX_READ_BYTES,
   MAX_READ_LINES,
   applyStringEdit,
+  applyMultiEdit,
   formatWithLineNumbers,
   htmlToReadableText,
   imageMediaTypeFor,
@@ -200,6 +201,23 @@ export function createWebViewToolExecutor() {
  return { name: 'file.edit', command: targetPath, status: 'success', output: `Edited ${targetPath}: replaced ${edit.replacedCount} occurrence${edit.replacedCount === 1 ? '' : 's'}.`, cwd };
  } catch (err: any) {
  return { name: 'file.edit', command: targetPath, status: 'error', output: err.message, cwd };
+ }
+ }
+
+ // ── file.edit_multi: varias ediciones atómicas ────────────────────────────
+ if (call.tool === 'file.edit_multi') {
+ const targetPath = resolvePath(String(call.arguments.path ?? ''), cwd);
+ const edits = Array.isArray(call.arguments.edits) ? call.arguments.edits : [];
+ try {
+ const content = await shellReadFile(targetPath);
+ const edit = applyMultiEdit(content, edits);
+ if (!edit.ok) {
+ return { name: 'file.edit_multi', command: targetPath, status: 'error', output: edit.error, cwd };
+ }
+ await shellWriteFile(targetPath, edit.updated);
+ return { name: 'file.edit_multi', command: targetPath, status: 'success', output: `Edited ${targetPath}: ${edits.length} edits, ${edit.replacedCount} replacement${edit.replacedCount === 1 ? '' : 's'}.`, cwd };
+ } catch (err: any) {
+ return { name: 'file.edit_multi', command: targetPath, status: 'error', output: err.message, cwd };
  }
  }
 

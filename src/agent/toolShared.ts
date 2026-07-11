@@ -116,6 +116,37 @@ export function applyStringEdit(
   return { ok: true, updated, replacedCount: replaceAll ? occurrences : 1 };
 }
 
+// ── file.edit_multi: varias ediciones en un archivo, TODO-o-NADA ─────────────
+export type MultiEditInput = { old_string: string; new_string: string; replace_all?: boolean };
+
+/**
+ * Aplica varias ediciones old→new en orden sobre el MISMO contenido, de forma
+ * atómica: si alguna no matchea, se aborta y NO se escribe nada (evita dejar el
+ * archivo a medio editar). Reusa applyStringEdit para no divergir con file.edit.
+ */
+export function applyMultiEdit(content: string, edits: MultiEditInput[]): StringEditResult {
+  if (!Array.isArray(edits) || edits.length === 0) {
+    return { ok: false, error: 'edits está vacío. Pasá al menos una edición {old_string, new_string}.' };
+  }
+  let current = content;
+  let total = 0;
+  for (let i = 0; i < edits.length; i += 1) {
+    const e = edits[i];
+    const r = applyStringEdit(
+      current,
+      String(e?.old_string ?? ''),
+      String(e?.new_string ?? ''),
+      Boolean(e?.replace_all),
+    );
+    if (!r.ok) {
+      return { ok: false, error: `Edición #${i + 1} falló: ${r.error} (no se escribió nada — es atómico).` };
+    }
+    current = r.updated;
+    total += r.replacedCount;
+  }
+  return { ok: true, updated: current, replacedCount: total };
+}
+
 // ── web.fetch: SSRF guard + reducción de HTML ────────────────────────────────
 /**
  * SSRF guard: web.fetch no debe alcanzar loopback ni redes internas (sus

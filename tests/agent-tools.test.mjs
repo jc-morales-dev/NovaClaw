@@ -159,5 +159,49 @@ async function writeFixture(rel, content) {
   assert.equal(res.image.data, pngB64);
 }
 
+// ── file.edit_multi: varias ediciones atómicas exitosas ──────────────────────
+{
+  const file = await writeFixture('multi-ok.txt', 'uno\ndos\ntres\n');
+  const res = await executor(
+    {
+      tool: 'file.edit_multi',
+      arguments: {
+        path: file,
+        edits: [
+          { old_string: 'uno', new_string: '1' },
+          { old_string: 'tres', new_string: '3' },
+        ],
+      },
+    },
+    ctx,
+  );
+  assert.equal(res.status, 'success', res.output);
+  const content = await fs.readFile(file, 'utf8');
+  assert.equal(content, '1\ndos\n3\n');
+}
+
+// ── file.edit_multi: si una edición falla, NO escribe nada (atómico) ──────────
+{
+  const original = 'alfa\nbeta\n';
+  const file = await writeFixture('multi-atomic.txt', original);
+  const res = await executor(
+    {
+      tool: 'file.edit_multi',
+      arguments: {
+        path: file,
+        edits: [
+          { old_string: 'alfa', new_string: 'A' }, // matchea
+          { old_string: 'no-existe', new_string: 'X' }, // NO matchea → aborta todo
+        ],
+      },
+    },
+    ctx,
+  );
+  assert.equal(res.status, 'error');
+  assert.match(res.output, /atómico/);
+  const content = await fs.readFile(file, 'utf8');
+  assert.equal(content, original, 'el archivo no debe cambiar si alguna edición falla');
+}
+
 await fs.rm(workspaceRoot, { recursive: true, force: true });
 console.log('agent-tools.test.mjs passed');

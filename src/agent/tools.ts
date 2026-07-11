@@ -11,6 +11,7 @@ import {
   MAX_READ_BYTES,
   MAX_READ_LINES,
   applyStringEdit,
+  applyMultiEdit,
   formatWithLineNumbers,
   htmlToReadableText,
   imageMediaTypeFor,
@@ -346,6 +347,45 @@ export function createLocalToolExecutor(
         command: targetPath,
         status: 'success',
         output: `Edited ${targetPath}: replaced ${edit.replacedCount} occurrence${edit.replacedCount === 1 ? '' : 's'}.`,
+        cwd: context.cwd,
+      };
+    }
+
+    if (call.tool === 'file.edit_multi') {
+      const targetPath = resolveTargetPath(String(call.arguments.path ?? ''), context.cwd);
+      const edits = Array.isArray(call.arguments.edits) ? call.arguments.edits : [];
+
+      let content: string;
+      try {
+        content = await fs.readFile(targetPath, 'utf8');
+      } catch {
+        return {
+          name: 'file.edit_multi',
+          command: targetPath,
+          status: 'error',
+          output: `File not found: ${targetPath}. Use file_write to create new files.`,
+          cwd: context.cwd,
+        };
+      }
+
+      const edit = applyMultiEdit(content, edits);
+      if (!edit.ok) {
+        return {
+          name: 'file.edit_multi',
+          command: targetPath,
+          status: 'error',
+          output: edit.error,
+          cwd: context.cwd,
+        };
+      }
+      opts.onFileChange?.({ path: targetPath, before: content, existedBefore: true });
+      await fs.writeFile(targetPath, edit.updated, 'utf8');
+
+      return {
+        name: 'file.edit_multi',
+        command: targetPath,
+        status: 'success',
+        output: `Edited ${targetPath}: ${edits.length} edits, ${edit.replacedCount} replacement${edit.replacedCount === 1 ? '' : 's'}.`,
         cwd: context.cwd,
       };
     }

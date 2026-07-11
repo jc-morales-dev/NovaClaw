@@ -453,7 +453,7 @@ export function classifyToolCall(call: ToolCallLike, context: SafetyContext): To
     };
   }
 
-  if (call.tool === 'file.write' || call.tool === 'file.edit') {
+  if (call.tool === 'file.write' || call.tool === 'file.edit' || call.tool === 'file.edit_multi') {
     const targetPath = resolvePathArgument(String(call.arguments.path ?? ''), context.cwd);
     const outsideWorkspace = !isWithinWorkspace(targetPath, context.workspaceRoot);
     const criticalFile = isCriticalWorkspaceFile(targetPath, context.workspaceRoot);

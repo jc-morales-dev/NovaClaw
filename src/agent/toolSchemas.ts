@@ -68,6 +68,31 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     },
   },
   {
+    name: 'file_edit_multi',
+    description:
+      'Apply SEVERAL surgical edits to ONE file ATOMICALLY (all-or-nothing). Each edit is an exact old_string→new_string replacement (same rules as file_edit: match exactly, no line-number prefix, unique unless replace_all). If ANY edit fails to match, NOTHING is written — fix it and resend. Prefer this over multiple file_edit calls when changing several spots in the same file: fewer round-trips and no half-edited intermediate state.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path to the file to edit.' },
+        edits: {
+          type: 'array',
+          description: 'Edits applied in order. All must match or none are written.',
+          items: {
+            type: 'object',
+            properties: {
+              old_string: { type: 'string', description: 'Exact text to find (unique unless replace_all).' },
+              new_string: { type: 'string', description: 'Replacement text.' },
+              replace_all: { type: 'boolean', description: 'Replace every occurrence (default false).' },
+            },
+            required: ['old_string', 'new_string'],
+          },
+        },
+      },
+      required: ['path', 'edits'],
+    },
+  },
+  {
     name: 'file_grep',
     description:
       'Search file CONTENTS with a regular expression, recursively. Returns matching lines as path:line: text. Use this to find where code/text lives before reading or editing. Skips node_modules, .git and binary files.',
@@ -245,6 +270,7 @@ export const TOOL_NAME_TO_DOT: Record<string, string> = {
   file_read: 'file.read',
   file_write: 'file.write',
   file_edit: 'file.edit',
+  file_edit_multi: 'file.edit_multi',
   file_grep: 'file.grep',
   file_list: 'file.list',
   file_search: 'file.search',
