@@ -1,0 +1,101 @@
+name: Build & Release APK
+
+# Compila el APK arm64 (targetSdk 34, con proot) y lo adjunta a la Release
+# cuando se pushea un tag vX.Y.Z. También corre a mano (workflow_dispatch).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # necesario para crear la Release y subir el APK
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build UI (vite)
+        run: npx vite build
+
+      - name: Bundle agent (esbuild)
+        run: |
+          mkdir -p android-native/agent-build
+          npx esbuild server.ts --bundle --platform=node --target=node18 \
+            --outfile=android-native/agent-build/agent.cjs --format=cjs \
+            --external:vite --external:bufferutil --external:utf-8-validate
+
+      - name: Package agent.zip
+        run: |
+          rm -rf android-native/agent-build/dist
+          cp -r dist android-native/agent-build/dist
+          mkdir -p android-native/app/src/main/assets
+          ( cd android-native/agent-build && zip -r ../app/src/main/assets/agent.zip agent.cjs dist )
+
+      - name: Ensure proot libs (jniLibs)
+        run: |
+          if [ ! -f android-native/app/src/main/jniLibs/arm64-v8a/libproot.so ]; then
+            python3 scripts/fetch_proot_so.py aarch64
+          fi
+
+      - name: Decode keystore (if configured)
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android-native/novaclaw-release.jks
+            cat > android-native/keystore.properties <<EOF
+          storeFile=novaclaw-release.jks
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          EOF
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Sin KEYSTORE_BASE64: se compila un APK firmado con la key debug."
+          fi
+
+      - name: Assemble APK (arm64, targetSdk 34)
+        working-directory: android-native
+        run: ./gradlew :app:assembleArm64Release --no-daemon
+
+      - name: Locate APK
+        id: apk
+        run: echo "path=$(ls android-native/app/build/outputs/apk/arm64/release/*.apk | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: novaclaw-arm64-apk
+          path: ${{ steps.apk.outputs.path }}
+
+      - name: Attach APK to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.apk.outputs.path }}
+          body: |
+            NovaClaw ${{ github.ref_name }} — APK arm64 (targetSdk 34, proot).
+            Instalación: ver docs/INSTALL.md. Requiere Android 8+ arm64.
+            ${{ steps.keystore.outputs.signed == 'false' && '⚠️ APK firmado con key debug (configurá KEYSTORE_BASE64 para releases firmadas).' || '' }}

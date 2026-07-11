@@ -7,8 +7,13 @@ run shell commands, read/edit files, browse your storage, see images, and use
 phone capabilities (camera, GPS, contacts, calendar) — all on-device, BYOK.
 
 > **Status: working, signed APK, validated on real hardware** (OPPO CPH2557,
-> Android 15, arm64). Installable by sideload — not on Google Play, because it
-> targets `targetSdk 28` on purpose so it can execute binaries without root.
+> Android 15, arm64). Installable by sideload — not on Google Play. Ships at
+> `targetSdk 34`, running the embedded Linux under **proot** (bundled as a
+> native lib) so it executes binaries without root and without depending on the
+> old `targetSdk 28` trick. See [docs/PROOT_TARGETSDK.md](docs/PROOT_TARGETSDK.md).
+> A legacy `targetSdk 28` build (direct exec) is still available as a fallback.
+
+**Install:** see [docs/INSTALL.md](docs/INSTALL.md) (non-technical guide).
 
 ---
 
@@ -72,11 +77,13 @@ The agent can run arbitrary code and touch the phone, so it is locked down:
 - **Token auth.** A random per-install token (`TokenStore`) is required on every
   `/api/*` call, on the `/pty` WebSocket, and on the native tools server. The
   agent injects it into the served HTML; other apps on the phone don't have it.
-- **Approval gate** (`src/agent/safety.ts`) for destructive/privileged shell
-  (`rm`, `mv`, `chmod`, `sudo`, package installs, interpreter inline code like
-  `python -c` / `node -e`, `find -delete`, `truncate`, redirections to
-  `/sdcard` or system paths, `pm`/`settings`, …), writes outside the workspace,
-  and writes to critical config files. The agent pauses for accept/reject.
+- **Approval gate** (`src/agent/safety.ts`) with an **allowlist (default-deny)**
+  model: a shell command runs unattended only if every segment of the pipeline
+  starts with a verified read-only/low-risk binary and the line has no command
+  substitution, write redirection, or injection env vars. Anything else —
+  deletes, installs, unrecognized binaries, `busybox rm`, `cp /dev/null`,
+  `python -c`, chained `&&`/`;`/`|` with an unsafe segment — pauses for
+  accept/reject. Same gate for writes outside the workspace or to critical files.
 - **Secret protection.** `file_read`/`file_grep` refuse to read files holding
   secrets (`novaclaw.config.json`, `*.jks`, …). `web_fetch` blocks loopback and
   private IP ranges (SSRF protection).
@@ -93,10 +100,14 @@ npm run dev            # http://localhost:3000
 npm test               # tsc-checked test suites
 
 # Android APK (Windows / PowerShell)
+python scripts/fetch_proot_so.py                      # once: populate jniLibs with proot
 pwsh scripts/build-android.ps1 -Arch arm64            # debug
 pwsh scripts/build-android.ps1 -Arch arm64 -Release   # signed release
 # output: android-native/app/build/outputs/apk/arm64/<debug|release>/
 ```
+
+CI builds the release APK on every `vX.Y.Z` tag and attaches it to the GitHub
+Release — see [.github/workflows/release.yml](.github/workflows/release.yml).
 
 Release signing uses `android-native/keystore.properties` +
 `novaclaw-release.jks` (both outside git). **Keep the keystore safe** — every
@@ -113,4 +124,10 @@ Requires Android 8+ arm64.
 
 ## License
 
-Private / unreleased.
+NovaClaw's own source is **MIT** (see [LICENSE](LICENSE)). The distributed APK
+bundles third-party binaries (proot under GPLv2, the Termux bootstrap, Shizuku)
+under their own licenses — see [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)
+for the details and the GPL obligations that apply when you redistribute the APK.
+
+For the distribution plan (open-source + niche strategy), see
+[docs/DISTRIBUCION.md](docs/DISTRIBUCION.md).
