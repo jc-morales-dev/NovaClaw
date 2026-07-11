@@ -252,7 +252,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'subagent_run',
     description:
-      'Delegate a self-contained subtask to a fresh sub-agent with its own clean context (like a research assistant). It has the same tools (except spawning more sub-agents and approval-gated actions) and returns a final text report. Use it for big explorations (e.g. "map this repo", "find all usages of X") so the main conversation stays focused. The sub-agent knows NOTHING about this conversation: include every detail it needs in the task.',
+      'Delegate a self-contained subtask to a fresh sub-agent with its own clean context (like a research assistant). It has the same tools (except spawning more sub-agents and approval-gated actions) and returns a final text report. Use it for big explorations (e.g. "map this repo", "find all usages of X") so the main conversation stays focused. To fan out, issue SEVERAL subagent_run calls in the SAME turn for independent subtasks — they run in PARALLEL. The sub-agent knows NOTHING about this conversation: include every detail it needs in the task.',
     parameters: {
       type: 'object',
       properties: {

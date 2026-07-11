@@ -575,22 +575,34 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
       }
 
       // El sub-agente se ejecuta acá adentro (necesita el modelo, no el executor).
+      // B8: varios subagent_run seguidos → EN PARALELO (fan-out de exploración,
+      // como Claude Code cuando reparte lecturas/búsquedas independientes).
       if (tc.name === 'subagent_run') {
-        const task = String(tc.args.task ?? '').trim();
-        const report = task
-          ? await runSubagentTask(task)
-          : '[subagent_run sin task: incluí la descripción completa de la subtarea.]';
-        const result: ToolExecutionResult = {
-          name: 'subagent.run',
-          command: task.slice(0, 120) + (task.length > 120 ? '…' : ''),
-          status: report.startsWith('[Sub-agente falló') ? 'error' : 'success',
-          output: report,
-          cwd: session.cwd,
-        };
-        messages.push({ role: 'tool', toolCallId: tc.id, toolName: tc.name, result: report });
-        session.history.push({ role: 'system', content: toolResultToHistory(result) });
-        events.push({ type: 'toolExecution', toolExecution: result });
-        i += 1;
+        let j = i;
+        while (j < batch.length && batch[j].name === 'subagent_run') j += 1;
+        const group = batch.slice(i, j);
+        const reports = await Promise.all(group.map((g) => {
+          const t = String(g.args.task ?? '').trim();
+          return t
+            ? runSubagentTask(t)
+            : Promise.resolve('[subagent_run sin task: incluí la descripción completa de la subtarea.]');
+        }));
+        for (let k = 0; k < group.length; k += 1) {
+          const g = group[k];
+          const report = reports[k];
+          const t = String(g.args.task ?? '').trim();
+          const result: ToolExecutionResult = {
+            name: 'subagent.run',
+            command: t.slice(0, 120) + (t.length > 120 ? '…' : ''),
+            status: report.startsWith('[Sub-agente falló') ? 'error' : 'success',
+            output: report,
+            cwd: session.cwd,
+          };
+          messages.push({ role: 'tool', toolCallId: g.id, toolName: g.name, result: report });
+          session.history.push({ role: 'system', content: toolResultToHistory(result) });
+          events.push({ type: 'toolExecution', toolExecution: result });
+        }
+        i = j;
         continue;
       }
 

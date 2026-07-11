@@ -242,4 +242,39 @@ const noopExecutor = async (call) => ({
   assert.ok(!sawNudge, 'no debe empujar si ya corrió diagnostics');
 }
 
+// ── B8: dos subagent_run en el mismo turno corren EN PARALELO ────────────────
+{
+  let active = 0;
+  let maxActive = 0;
+  let mainTurn = 0;
+  const fakeModel = async ({ system }) => {
+    if (/You are a NovaClaw sub-agent/i.test(system ?? '')) {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 15));
+      active -= 1;
+      return { text: 'reporte del subagente' };
+    }
+    mainTurn += 1;
+    if (mainTurn === 1) {
+      return { toolCalls: [
+        { id: 's1', name: 'subagent_run', args: { task: 'explorá A' } },
+        { id: 's2', name: 'subagent_run', args: { task: 'explorá B' } },
+      ] };
+    }
+    return { text: 'síntesis final.' };
+  };
+  const runtime = createNativeAgentRuntime({
+    workspaceRoot: os.tmpdir(),
+    getConfig: () => ({ providerId: 'x', apiKey: 'x', model: 'm' }),
+    executeToolCall: async (c) => ({ name: c.tool, command: '', status: 'success', output: 'ok', cwd: os.tmpdir() }),
+    callModel: fakeModel,
+  });
+  const session = createAgentSession('fanout', os.tmpdir());
+  const result = await runtime.runUserTurn(session, 'explorá A y B');
+  assert.equal(maxActive, 2, `los 2 subagentes deben correr en paralelo (maxActive=${maxActive})`);
+  const subEvents = result.events.filter((e) => e.type === 'toolExecution' && e.toolExecution.name === 'subagent.run');
+  assert.equal(subEvents.length, 2, 'deben registrarse 2 reportes de subagente');
+}
+
 console.log('agent-native-extra.test.mjs passed');
