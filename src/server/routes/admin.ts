@@ -1,10 +1,12 @@
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import type { Express } from 'express';
 
 import type { McpServerConfig } from '../../agent/mcp';
 import { PROVIDERS, getProvider } from '../../agent/providers';
 import { verifyAndListModels } from '../../agent/modelClient';
-import { catalogForClient, findCatalogEntry } from '../../agent/mcpCatalog';
+import { catalogForClient, deviceSpecFor, findCatalogEntry } from '../../agent/mcpCatalog';
+import { startDeviceFlow, pollDeviceToken, type DeviceAuthSpec } from '../../agent/oauthDevice';
 import { saveConfigToFile, syncBaseUrlToProvider, zenConfig } from '../config';
 import { getRuntimeSnapshot, runtimeState, startAgentRuntime, systemLogs } from '../state';
 import { MCP_CONFIG_PATH, mcpManager, readMcpConfig, reconnectMcp, saveMcpSecretDev, writeMcpConfig } from '../mcpRegistry';
@@ -93,6 +95,54 @@ export function registerAdminRoutes(app: Express) {
       });
     } catch (error: any) {
       res.status(500).json({ error: error?.message ?? 'No se pudo conectar el MCP.' });
+    }
+  });
+
+  // ── Flujo del código (OAuth device flow, Fase B) ──────────────────────────
+  // Estado en memoria de los flujos en curso (flowId → device_code + spec).
+  type DeviceFlow = { spec: DeviceAuthSpec; deviceCode: string; catalogId: string; expiresAt: number };
+  const deviceFlows = new Map<string, DeviceFlow>();
+
+  // Arranca el flujo: pide el user_code + verification_uri para mostrarle al usuario.
+  app.post('/api/mcp/device/start', async (req, res) => {
+    const catalogId = String(req.body?.catalogId ?? '').trim();
+    const dev = deviceSpecFor(catalogId);
+    if (!dev) {
+      return res.status(400).json({ error: 'Este MCP no tiene el flujo del código configurado (falta el client_id de la OAuth App).' });
+    }
+    try {
+      const start = await startDeviceFlow(dev);
+      const flowId = crypto.randomUUID();
+      // Limpieza básica de flujos vencidos.
+      const now = Date.now();
+      for (const [k, v] of deviceFlows) if (v.expiresAt < now) deviceFlows.delete(k);
+      deviceFlows.set(flowId, { spec: dev, deviceCode: start.deviceCode, catalogId, expiresAt: now + start.expiresIn * 1000 });
+      res.json({
+        flowId,
+        userCode: start.userCode,
+        verificationUri: start.verificationUri,
+        verificationUriComplete: start.verificationUriComplete ?? null,
+        interval: start.interval,
+        expiresIn: start.expiresIn,
+      });
+    } catch (error: any) {
+      res.status(502).json({ error: error?.message ?? 'No se pudo iniciar el flujo del código.' });
+    }
+  });
+
+  // Poll: la UI llama cada `interval` seg. Devuelve el token cuando el user autorizó.
+  app.post('/api/mcp/device/poll', async (req, res) => {
+    const flowId = String(req.body?.flowId ?? '').trim();
+    const flow = deviceFlows.get(flowId);
+    if (!flow) return res.status(404).json({ status: 'error', error: 'flujo desconocido o vencido' });
+    try {
+      const result = await pollDeviceToken(flow.spec, flow.deviceCode);
+      if (result.status === 'authorized' || result.status === 'denied' || result.status === 'expired') {
+        deviceFlows.delete(flowId);
+      }
+      res.json(result);
+    } catch (error: any) {
+      res.json({ status: 'error', error: error?.message ?? 'error de polling' });
     }
   });
 

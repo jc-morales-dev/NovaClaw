@@ -165,6 +165,49 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
   },
 ];
 
+// ── Flujo del código (OAuth device flow, RFC 8628) por proveedor ────────────
+// endpoints públicos conocidos. El client_id lo trae Julio (registra una OAuth
+// App y setea la env var); si no está, la UI cae al pegado de token manual.
+type DeviceFlowSpec = {
+  deviceAuthUrl: string;
+  tokenUrl: string;
+  scope: string;
+  clientIdEnv: string;
+  /** env var del server MCP donde va el token obtenido. */
+  tokenEnv: string;
+};
+
+const MCP_DEVICE_FLOWS: Record<string, DeviceFlowSpec> = {
+  github: {
+    deviceAuthUrl: 'https://github.com/login/device/code',
+    tokenUrl: 'https://github.com/login/oauth/access_token',
+    scope: 'repo read:org',
+    clientIdEnv: 'GITHUB_OAUTH_CLIENT_ID',
+    tokenEnv: 'GITHUB_PERSONAL_ACCESS_TOKEN',
+  },
+  gitlab: {
+    deviceAuthUrl: 'https://gitlab.com/oauth/authorize_device',
+    tokenUrl: 'https://gitlab.com/oauth/token',
+    scope: 'api',
+    clientIdEnv: 'GITLAB_OAUTH_CLIENT_ID',
+    tokenEnv: 'GITLAB_PERSONAL_ACCESS_TOKEN',
+  },
+};
+
+/** DeviceAuthSpec resuelto (con client_id del env) para ese MCP, o null si no aplica. */
+export function deviceSpecFor(id: string): { deviceAuthUrl: string; tokenUrl: string; clientId: string; scope: string; tokenEnv: string } | null {
+  const f = MCP_DEVICE_FLOWS[id];
+  if (!f) return null;
+  const clientId = process.env[f.clientIdEnv];
+  if (!clientId) return null;
+  return { deviceAuthUrl: f.deviceAuthUrl, tokenUrl: f.tokenUrl, clientId, scope: f.scope, tokenEnv: f.tokenEnv };
+}
+
+/** ¿Este MCP tiene el flujo del código disponible (endpoints + client_id)? */
+export function deviceAvailableFor(id: string): boolean {
+  return deviceSpecFor(id) !== null;
+}
+
 /** Busca una entrada del catálogo por id o alias (para "instalá el MCP de ..."). */
 export function findCatalogEntry(query: string): McpCatalogEntry | undefined {
   const q = query.trim().toLowerCase();
@@ -186,5 +229,7 @@ export function catalogForClient() {
     secretHelpUrl: e.auth.type === 'none' ? null : e.auth.secret.helpUrl ?? null,
     secretHint: e.auth.type === 'none' ? null : e.auth.secret.hint ?? null,
     authType: e.auth.type,
+    // ¿Se puede conectar con "el código" (device flow) en vez de pegar token?
+    deviceAvailable: deviceAvailableFor(e.id),
   }));
 }

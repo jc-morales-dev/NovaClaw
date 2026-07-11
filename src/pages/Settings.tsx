@@ -23,6 +23,8 @@ import {
   ShieldCheck,
   ExternalLink,
   Fingerprint,
+  Copy,
+  KeyRound,
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { translations } from '../translations';
@@ -85,6 +87,9 @@ export default function Settings() {
   // JSON crudo (súper avanzado, escondido).
   const [showJson, setShowJson] = useState(false);
   const [mcpJson, setMcpJson] = useState('{\n  "mcpServers": {}\n}');
+  // Flujo del código (OAuth device flow).
+  const [device, setDevice] = useState<{ itemId: string; flowId: string; userCode: string; url: string; urlComplete: string | null; interval: number } | null>(null);
+  const [codeCopied, setCodeCopied] = useState(false);
 
   async function refreshMcp() {
     try {
@@ -169,6 +174,53 @@ export default function Settings() {
     catch (error: any) { setMcpError(error?.message ?? 'Error'); }
     finally { setMcpBusy(''); }
   }
+
+  /** Flujo del código: arranca el device flow y muestra el código + URL. */
+  async function startDevice(item: McpCatalogItem) {
+    setMcpError('');
+    try {
+      const s = await platform.startMcpDevice(item.id);
+      setDevice({ itemId: item.id, flowId: s.flowId, userCode: s.userCode, url: s.verificationUri, urlComplete: s.verificationUriComplete, interval: s.interval || 5 });
+    } catch (error: any) {
+      setMcpError(error?.message ?? 'Error');
+    }
+  }
+
+  // Polling del flujo del código: espera a que el usuario autorice en la web.
+  useEffect(() => {
+    if (!device) return;
+    let cancelled = false;
+    const tick = async () => {
+      let r;
+      try { r = await platform.pollMcpDevice(device.flowId); } catch { return; }
+      if (cancelled) return;
+      if (r.status === 'authorized') {
+        const item = mcpCatalog.find((c) => c.id === device.itemId);
+        saveMcpSecret(device.itemId, r.token);
+        setSavedSecrets((s) => ({ ...s, [device.itemId]: true }));
+        const flow = device;
+        setDevice(null);
+        const ok = await confirmBiometric(
+          isSpanish ? `Instalar ${item?.label ?? flow.itemId}` : `Install ${item?.label ?? flow.itemId}`,
+          isSpanish ? 'Confirmá con tu huella' : 'Confirm with your fingerprint',
+        );
+        if (!ok) { setMcpError(isSpanish ? 'Cancelado.' : 'Cancelled.'); return; }
+        const payload: any = { catalogId: flow.itemId };
+        if (!hasNativeMcp()) payload.secretValueDev = r.token;
+        try { await platform.connectMcp(payload); await refreshMcp(); }
+        catch (error: any) { setMcpError(error?.message ?? 'Error'); }
+      } else if (r.status === 'denied' || r.status === 'expired' || r.status === 'error') {
+        setDevice(null);
+        setMcpError(
+          r.status === 'denied' ? (isSpanish ? 'Autorización rechazada.' : 'Authorization denied.')
+            : r.status === 'expired' ? (isSpanish ? 'El código venció, probá de nuevo.' : 'The code expired, try again.')
+              : `Error: ${(r as any).error ?? ''}`,
+        );
+      }
+    };
+    const id = setInterval(tick, Math.max(2, device.interval) * 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [device, mcpCatalog, isSpanish]);
 
   /** Camino súper-avanzado: pegar el JSON crudo (formato Claude Desktop). */
   async function handleSaveMcpJson() {
@@ -691,6 +743,41 @@ export default function Settings() {
 
                 {mcpError && <p className="text-red-400 text-[12px] leading-snug">{mcpError}</p>}
 
+                {/* Tarjeta del flujo del código (device flow) */}
+                {device && (
+                  <div className="rounded-2xl border border-[#FF7A1A]/40 bg-[#FF7A1A]/[0.06] p-4 space-y-3">
+                    <p className="text-[13px] text-zinc-200 leading-relaxed">
+                      {isSpanish ? 'Abrí esta página y poné el código:' : 'Open this page and enter the code:'}
+                    </p>
+                    <div className="flex items-center justify-between gap-2 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5">
+                      <span className="text-[22px] font-mono font-bold tracking-widest text-[#FFB25C]">{device.userCode}</span>
+                      <button
+                        type="button"
+                        onClick={() => { try { navigator.clipboard.writeText(device.userCode); setCodeCopied(true); setTimeout(() => setCodeCopied(false), 1500); } catch { /* */ } }}
+                        className="shrink-0 flex items-center gap-1 text-[12px] text-zinc-300 hover:text-white px-2 py-1 rounded-lg hover:bg-zinc-800 transition"
+                      >
+                        <Copy size={13} /> {codeCopied ? (isSpanish ? 'Copiado' : 'Copied') : (isSpanish ? 'Copiar' : 'Copy')}
+                      </button>
+                    </div>
+                    <a
+                      href={device.urlComplete || device.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="w-full flex items-center justify-center gap-1.5 bg-[#FF7A1A] text-[#1A0E02] font-semibold py-2.5 rounded-xl hover:brightness-110 transition text-[13px]"
+                    >
+                      <ExternalLink size={14} /> {isSpanish ? 'Abrir y autorizar' : 'Open and authorize'}
+                    </a>
+                    <p className="text-[11px] text-zinc-500 leading-snug break-all">{device.url}</p>
+                    <p className="text-[11px] text-zinc-400 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-[#FF7A1A] animate-pulse" />
+                      {isSpanish ? 'Esperando que autorices…' : 'Waiting for you to authorize…'}
+                    </p>
+                    <button type="button" onClick={() => setDevice(null)} className="text-[11px] text-zinc-500 hover:text-zinc-300">
+                      {isSpanish ? 'Cancelar' : 'Cancel'}
+                    </button>
+                  </div>
+                )}
+
                 {/* Conectados */}
                 {mcpServers.length > 0 && (
                   <div className="space-y-1.5">
@@ -742,6 +829,16 @@ export default function Settings() {
                         </div>
                         {needsInput && (
                           <div className="space-y-1.5">
+                            {item.deviceAvailable && (
+                              <button
+                                type="button"
+                                disabled={mcpBusy === item.id || Boolean(device)}
+                                onClick={() => startDevice(item)}
+                                className="w-full flex items-center justify-center gap-1.5 border border-[#FF7A1A]/40 text-[#FFB25C] text-[12px] font-semibold py-2 rounded-lg hover:bg-[#FF7A1A]/10 disabled:opacity-50 transition"
+                              >
+                                <KeyRound size={13} /> {isSpanish ? 'Conectar con el código' : 'Connect with a code'}
+                              </button>
+                            )}
                             <input
                               type="password"
                               value={secretDrafts[item.id] ?? ''}
@@ -754,6 +851,7 @@ export default function Settings() {
                             />
                             {(item.secretHint || item.secretHelpUrl) && (
                               <p className="text-[10.5px] text-zinc-500 leading-snug">
+                                {item.deviceAvailable && <span className="text-zinc-600">{isSpanish ? 'o pegá un token — ' : 'or paste a token — '}</span>}
                                 {item.secretHint}
                                 {item.secretHelpUrl && (
                                   <> · <a href={item.secretHelpUrl} target="_blank" rel="noreferrer" className="text-[#FFB25C] inline-flex items-center gap-0.5">{isSpanish ? 'generar' : 'get one'} <ExternalLink size={10} /></a></>

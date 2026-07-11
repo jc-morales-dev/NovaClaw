@@ -53,6 +53,7 @@ export type McpCatalogItem = {
  secretHelpUrl: string | null;
  secretHint: string | null;
  authType: 'none' | 'token' | 'device';
+ deviceAvailable: boolean;
 };
 export type McpConnectPayload = {
  catalogId?: string;
@@ -64,6 +65,13 @@ export type McpConnectPayload = {
  secretValueDev?: string;
 };
 export type McpConnectResult = { ok: boolean; server: string; tools: Array<{ name: string; description?: string }>; needsSecret?: boolean; error?: string | null };
+export type McpDeviceStart = { flowId: string; userCode: string; verificationUri: string; verificationUriComplete: string | null; interval: number; expiresIn: number; error?: string };
+export type McpDevicePoll =
+  | { status: 'pending'; interval?: number }
+  | { status: 'authorized'; token: string }
+  | { status: 'denied' }
+  | { status: 'expired' }
+  | { status: 'error'; error: string };
 
 type RuntimeSnapshot = {
  agent: { status: 'stopped' | 'running'; mode: 'remote' | 'local'; label: string };
@@ -118,6 +126,10 @@ interface PlatformAdapter {
  connectMcp(payload: McpConnectPayload): Promise<McpConnectResult>;
  /** Quita un MCP conectado. */
  disconnectMcp(id: string): Promise<{ ok: boolean }>;
+ /** Flujo del código (OAuth device flow): arranca y devuelve el código + URL. */
+ startMcpDevice(catalogId: string): Promise<McpDeviceStart>;
+ /** Poll del flujo del código; devuelve el token cuando el usuario autoriza. */
+ pollMcpDevice(flowId: string): Promise<McpDevicePoll>;
  /** Deshace el último archivo escrito/editado por el agente. */
  undo(): Promise<{ ok: boolean; path?: string; message?: string }>;
 }
@@ -316,6 +328,15 @@ const webAdapter: PlatformAdapter = {
  },
  async disconnectMcp(id) {
  const r = await apiFetch('/api/mcp/disconnect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+ return r.json();
+ },
+ async startMcpDevice(catalogId) {
+ const r = await apiFetch('/api/mcp/device/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ catalogId }) });
+ if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error ?? 'No se pudo iniciar el flujo del código.'); }
+ return r.json();
+ },
+ async pollMcpDevice(flowId) {
+ const r = await apiFetch('/api/mcp/device/poll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ flowId }) });
  return r.json();
  },
  async undo() { const r = await apiFetch('/api/undo', { method: 'POST' }); return r.json(); },
@@ -722,6 +743,8 @@ const capacitorAdapter: PlatformAdapter = {
  async getMcpCatalog() { return { catalog: [] }; },
  async connectMcp() { return { ok: false, server: '', tools: [] }; },
  async disconnectMcp() { return { ok: false }; },
+ async startMcpDevice() { return { flowId: '', userCode: '', verificationUri: '', verificationUriComplete: null, interval: 5, expiresIn: 900, error: 'no disponible' }; },
+ async pollMcpDevice() { return { status: 'error', error: 'no disponible' }; },
  async undo() { return { ok: false, message: 'Deshacer no está disponible en este modo.' }; },
 };
 
