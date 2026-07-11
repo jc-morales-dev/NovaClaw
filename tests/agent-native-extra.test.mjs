@@ -139,4 +139,54 @@ const noopExecutor = async (call) => ({
   assert.equal(result.events.filter((e) => e.type === 'toolExecution').length, 2, 'los 2 tool calls sí se muestran');
 }
 
+// ── anti-loop: la MISMA llamada repetida se corta a la 3ª sin re-ejecutar ─────
+{
+  let turn = 0;
+  const fakeModel = async () => {
+    turn += 1;
+    // El modelo insiste con la MISMA tool y args (loop típico de modelo débil).
+    if (turn <= 4) return { toolCalls: [{ id: 't' + turn, name: 'terminal_run', args: { command: 'ls' } }] };
+    return { text: 'Listo.' };
+  };
+  let executorCalls = 0;
+  const runtime = createNativeAgentRuntime({
+    workspaceRoot: os.tmpdir(),
+    getConfig: () => ({ providerId: 'x', apiKey: 'x', model: 'm' }),
+    executeToolCall: async (c) => { executorCalls += 1; return noopExecutor(c); },
+    callModel: fakeModel,
+  });
+  const session = createAgentSession('loop', os.tmpdir());
+  const result = await runtime.runUserTurn(session, 'corré ls');
+  // Las 2 primeras corren de verdad; de la 3ª en adelante se cortan con aviso.
+  assert.equal(executorCalls, 2, `solo 2 ejecuciones reales, no ${executorCalls}`);
+  const warned = result.events.some(
+    (e) => e.type === 'toolExecution' && /MISMA llamada/i.test(e.toolExecution.output || ''),
+  );
+  assert.ok(warned, 'debe avisar del loop');
+}
+
+// ── tool inexistente: se guía al modelo sin llamar al executor ────────────────
+{
+  let turn = 0;
+  const fakeModel = async () => {
+    turn += 1;
+    if (turn === 1) return { toolCalls: [{ id: 'u1', name: 'magic_do_everything', args: {} }] };
+    return { text: 'ok' };
+  };
+  let executorCalls = 0;
+  const runtime = createNativeAgentRuntime({
+    workspaceRoot: os.tmpdir(),
+    getConfig: () => ({ providerId: 'x', apiKey: 'x', model: 'm' }),
+    executeToolCall: async (c) => { executorCalls += 1; return noopExecutor(c); },
+    callModel: fakeModel,
+  });
+  const session = createAgentSession('unknown', os.tmpdir());
+  const result = await runtime.runUserTurn(session, 'hacé magia');
+  assert.equal(executorCalls, 0, 'una tool inexistente no debe llegar al executor');
+  const hint = result.events.some(
+    (e) => e.type === 'toolExecution' && /no existe/i.test(e.toolExecution.output || ''),
+  );
+  assert.ok(hint, 'debe guiar al modelo con las tools válidas');
+}
+
 console.log('agent-native-extra.test.mjs passed');

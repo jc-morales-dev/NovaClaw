@@ -78,6 +78,7 @@ Work like Claude Code: reason internally, act with tools, and speak to the user 
 - Reply in the user's language (Spanish by default for this user).
 - Shell policy is allowlist-based: only recognized read-only/low-risk commands run directly; anything else (deletes, installs, unrecognized binaries, write redirections) triggers a user-approval dialog — that's expected, proceed with the call. Prefer the native tools (file_write, file_edit, workspace_mkdir) over shell equivalents for mutations: they don't need approval inside the workspace.
 - Never invent file contents, command output, or API responses. If you didn't run it, say so.
+- If a tool returns an error, READ it and ADAPT (fix the argument, try another tool or path). NEVER call the exact same tool with the same arguments twice — if it failed or gave nothing new, change something. The moment you have enough to answer, STOP calling tools and reply. Getting stuck repeating actions is the worst thing you can do.
 - Remember: only your FINAL message is shown to the user. Make it count — complete, well-formatted (tables/detail when asked), leading with the result.`;
 
 // El subagente: mismo poder, contexto limpio, sin aprobaciones ni sub-subagentes.
@@ -207,6 +208,32 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
 
   function dotName(nativeName: string): string {
     return TOOL_NAME_TO_DOT[nativeName] ?? nativeName;
+  }
+
+  // ── Guardrails del harness: le sacan más jugo a CUALQUIER modelo (sobre todo
+  // los chicos/gratis, que se traban repitiendo una tool, alucinan nombres de
+  // tools o se rinden). Son a nivel harness → andan con cualquier modelo y no
+  // estorban a los fuertes (rara vez los disparan).
+  const KNOWN_TOOLS = new Set(Object.keys(TOOL_NAME_TO_DOT));
+  // Cuenta llamadas idénticas (name+args) dentro del turno para cortar loops.
+  let loopGuard = new Map<string, number>();
+
+  /** Aviso si esta MISMA llamada ya se repitió demasiado en el turno (loop). */
+  function loopWarning(tc: { name: string; args: Record<string, any> }): string | null {
+    if (tc.name === 'todo_write') return null; // sus args cambian legítimamente
+    const fp = tc.name + '::' + JSON.stringify(tc.args ?? {});
+    const n = (loopGuard.get(fp) ?? 0) + 1;
+    loopGuard.set(fp, n);
+    if (n >= 3) {
+      return `Ya ejecutaste esta MISMA llamada (${dotName(tc.name)}) ${n} veces con argumentos idénticos; el resultado no va a cambiar. NO la repitas. Usá lo que ya obtuviste, cambiá de estrategia (otros argumentos u otra herramienta), o si ya tenés lo necesario dá la respuesta final AHORA.`;
+    }
+    return null;
+  }
+
+  /** Si el modelo alucina un nombre de tool inexistente, lo guiamos a las válidas. */
+  function unknownToolHint(name: string): string | null {
+    if (KNOWN_TOOLS.has(name) || isMcpToolName(name)) return null;
+    return `La herramienta "${name}" no existe. Usá una de estas: ${[...KNOWN_TOOLS].join(', ')}. Reintentá con el nombre exacto.`;
   }
 
   /** Tools de servidores MCP como ToolSchema, para ofrecerlas al modelo. */
@@ -366,6 +393,18 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
         return { events };
       }
 
+      // Aviso de presupuesto: cuando quedan pocos pasos, empujamos al modelo a
+      // CERRAR (dar la respuesta) en vez de chocar contra el tope y perder el
+      // turno entero sin devolverle nada al usuario. Ayuda mucho a modelos que
+      // se dispersan. Se inyecta una sola vez.
+      const stepsLeft = maxIterations - i;
+      if (stepsLeft === 6) {
+        messages.push({
+          role: 'user',
+          text: '[sistema] Te quedan pocos pasos en este turno. Si ya tenés con qué responder, dá la respuesta final AHORA; si no, andá directo a lo esencial y cerrá.',
+        });
+      }
+
       let reply;
       try {
         reply = await callModel({
@@ -417,7 +456,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
       }
     }
 
-    const fallback = 'El agente alcanzó el máximo de pasos. Probá con un pedido más específico.';
+    const fallback = 'Llegué al límite de pasos de este turno sin cerrar del todo la tarea. Contame si querés que siga, o acotá un poco el pedido para terminarlo.';
     session.history.push({ role: 'assistant', content: fallback });
     events.push({ type: 'message', message: fallback });
     return { events };
@@ -437,6 +476,39 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     while (i < batch.length) {
       if (signal?.aborted) return 'aborted';
       const tc = batch[i];
+
+      // Guardrail: nombre de tool alucinado → guiar al modelo a las válidas en
+      // vez de fallar con un error críptico (los modelos chicos inventan tools).
+      const unknownHint = unknownToolHint(tc.name);
+      if (unknownHint) {
+        const warn: ToolExecutionResult = {
+          name: tc.name,
+          command: JSON.stringify(tc.args ?? {}).slice(0, 120),
+          status: 'error',
+          output: unknownHint,
+          cwd: session.cwd,
+        };
+        recordResult(session, messages, tc, warn, events);
+        i += 1;
+        continue;
+      }
+
+      // Guardrail anti-loop: si el modelo repite la MISMA llamada una y otra vez
+      // (típico de modelos débiles trabados), la cortamos con un aviso claro en
+      // vez de re-ejecutarla al pedo y consumir el turno.
+      const loopMsg = loopWarning(tc);
+      if (loopMsg) {
+        const warn: ToolExecutionResult = {
+          name: dotName(tc.name),
+          command: JSON.stringify(tc.args ?? {}).slice(0, 120),
+          status: 'error',
+          output: loopMsg,
+          cwd: session.cwd,
+        };
+        recordResult(session, messages, tc, warn, events);
+        i += 1;
+        continue;
+      }
 
       // Modo PLAN: bloquear cualquier tool que mute o ejecute (solo lectura/análisis).
       if (turnMode === 'plan' && isPlanBlocked(tc.name)) {
@@ -611,6 +683,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     mode?: 'plan' | 'build',
   ): Promise<RuntimeResult> {
     turnMode = mode === 'plan' ? 'plan' : 'build';
+    loopGuard = new Map(); // el anti-loop se cuenta por turno
     session.history.push({ role: 'user', content: message });
     // Conversaciones largas: resumir el historial con el modelo antes de armar
     // el contexto, para que el turno nunca reviente la ventana y no se pierda el hilo.
