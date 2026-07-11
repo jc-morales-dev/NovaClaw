@@ -31,15 +31,17 @@
 | ✅ B4 | Compactación fina (preserva rutas/comandos/plan, 1024→2048) | c30e912 |
 | ✅ B8 | Subagentes en paralelo (fan-out) | a4b9b2a |
 | ✅ B9 | Compactación por presupuesto de tokens (~100k) | fa6530f |
-| ✅ B11 | Prompt reforzado (paralelo + multi-edit) | (este commit) |
+| ✅ B11 | Prompt reforzado (paralelo + multi-edit) | 5230a71 |
+| ✅ B6 | Skills on-demand (`skills/<nombre>/SKILL.md` → índice al prompt) | 24d16c2 |
+| ✅ B7 | Hooks PostToolUse (`novaclaw.hooks.json` → formatear/lint tras editar) | 24d16c2 |
 
-**Pendiente (necesitan más superficie / validación en el OPPO real, mejor como su propio chunk):**
+**Pendiente (1 solo, a propósito):**
 
-- ⏳ **B6 Skills on-demand** — requiere escanear `skills/` e inyectar el índice al system prompt (toca server.ts `getProjectContext` + camino WebView).
-- ⏳ **B7 Hooks PostToolUse** — auto-formatear/lint tras editar; toca el executor real (tools.ts) que corre en el teléfono → conviene validar en el OPPO antes de soltarlo.
-- ⏳ **B10 Streaming token-por-token** — toca modelClient (stream:true) + SSE del server + UI; **necesita prueba en el teléfono** (riesgo de UI), mejor hacerlo con Julio presente.
+- ⏳ **B10 Streaming token-por-token** — toca modelClient (stream:true) + SSE del server + UI; **necesita prueba en el teléfono** (riesgo de romper la pantalla del chat), mejor hacerlo con Julio presente.
 
-**Resumen honesto:** quedaron cerrados **todos los ítems de alto impacto en el RESULTADO** (Nivel 1 y 2 del plan) + el bonus crítico de thinking. Lo que falta (B6/B7/B10) es capacidad extra y percepción, y toca código que corre en el teléfono → se dejan para validar en el OPPO.
+**APK LISTO PARA INSTALAR:** `android-native/app/build/outputs/apk/arm64/debug/app-arm64-debug.apk` (39 MB) compilado con TODOS estos cambios y verificado (los marcadores fetchWithRetry/adaptive/hooks/skills/multi-edit están en el `agent.cjs` empaquetado). Un vigilante en segundo plano lo instala solo (`adb install -r`, mantiene datos) apenas el OPPO se reconecte.
+
+**Resumen honesto:** cerrados **10 de 11 ítems** del plan (todo Nivel 1 y 2 + la mayoría del 3) + el fix crítico de thinking. Solo queda **B10** (percepción, no resultado bruto) para validar la UI en el teléfono con Julio.
 
 ---
 
