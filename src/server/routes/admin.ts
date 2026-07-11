@@ -4,9 +4,10 @@ import type { Express } from 'express';
 import type { McpServerConfig } from '../../agent/mcp';
 import { PROVIDERS, getProvider } from '../../agent/providers';
 import { verifyAndListModels } from '../../agent/modelClient';
+import { catalogForClient, findCatalogEntry } from '../../agent/mcpCatalog';
 import { saveConfigToFile, syncBaseUrlToProvider, zenConfig } from '../config';
 import { getRuntimeSnapshot, runtimeState, startAgentRuntime, systemLogs } from '../state';
-import { MCP_CONFIG_PATH, mcpManager, readMcpConfig, reconnectMcp } from '../mcpRegistry';
+import { MCP_CONFIG_PATH, mcpManager, readMcpConfig, reconnectMcp, saveMcpSecretDev, writeMcpConfig } from '../mcpRegistry';
 import { isOpenCodeBusy, refreshOpenCodeAvailability, startOpenCodeRuntime, stopOpenCodeRuntime } from '../opencode';
 import { undoLastChange } from '../agentRuntimes';
 
@@ -36,6 +37,77 @@ export function registerAdminRoutes(app: Express) {
       });
     } catch (error: any) {
       res.status(400).json({ error: error?.message ?? 'No se pudo guardar la config MCP.' });
+    }
+  });
+
+  // Catálogo curado de MCP conocidos (para los botones "Conectar" de un toque).
+  app.get('/api/mcp/catalog', (_req, res) => {
+    res.json({ catalog: catalogForClient() });
+  });
+
+  // Conectar un MCP (desde el catálogo por `id`, o manual con command/args).
+  // Los secretos NO viajan en texto plano al config: se guardan aparte (Keystore
+  // en el teléfono vía el bridge; en dev, secretValueDev → novaclaw.secrets.json)
+  // y el config solo lleva el placeholder ${SECRET:<id>}.
+  app.post('/api/mcp/connect', async (req, res) => {
+    const body = req.body ?? {};
+    const fromCatalog = body.catalogId ? findCatalogEntry(String(body.catalogId)) : undefined;
+
+    const id = String(body.id ?? fromCatalog?.id ?? '').trim();
+    const command = String(body.command ?? fromCatalog?.command ?? '').trim();
+    const args = Array.isArray(body.args) ? body.args.map(String) : (fromCatalog?.args ?? []);
+    if (!id || !command) {
+      return res.status(400).json({ error: 'Faltan "id" o "command".' });
+    }
+
+    // Nombre de la env var del secreto (del catálogo, o del form manual).
+    const secretEnv = fromCatalog && fromCatalog.auth.type !== 'none'
+      ? fromCatalog.auth.secret.env
+      : (typeof body.secretEnv === 'string' ? body.secretEnv.trim() : '');
+
+    // En dev (PC) el valor del secreto puede venir para guardarlo localmente.
+    // En el teléfono el WebView YA lo guardó en el Keystore vía el bridge.
+    if (secretEnv && typeof body.secretValueDev === 'string' && body.secretValueDev) {
+      saveMcpSecretDev(id, body.secretValueDev);
+    }
+
+    const cfg = readMcpConfig();
+    cfg[id] = {
+      command,
+      args,
+      ...(secretEnv ? { env: { [secretEnv]: `\${SECRET:${id}}` } } : {}),
+    };
+    try {
+      writeMcpConfig(cfg);
+      const result = await reconnectMcp();
+      const ok = result.connected.includes(id);
+      const failure = result.failed.find((f) => f.name === id);
+      const tools = mcpManager.listTools().filter((t) => t.server === id);
+      res.json({
+        ok,
+        server: id,
+        tools: tools.map((t) => ({ name: t.name, description: t.description })),
+        // Si falló y pedía secreto, probablemente falta/está mal el token.
+        needsSecret: !ok && Boolean(secretEnv),
+        error: ok ? null : (failure?.error ?? 'No se pudo conectar.'),
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message ?? 'No se pudo conectar el MCP.' });
+    }
+  });
+
+  // Desconectar/quitar un MCP.
+  app.post('/api/mcp/disconnect', async (req, res) => {
+    const id = String(req.body?.id ?? '').trim();
+    if (!id) return res.status(400).json({ error: 'Falta "id".' });
+    const cfg = readMcpConfig();
+    delete cfg[id];
+    try {
+      writeMcpConfig(cfg);
+      await reconnectMcp();
+      res.json({ ok: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message ?? 'No se pudo desconectar.' });
     }
   });
 

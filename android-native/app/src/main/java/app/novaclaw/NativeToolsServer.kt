@@ -107,6 +107,9 @@ class NativeToolsServer(private val context: Context, private val token: String 
                         "/contacts" -> if (authed) getContacts(query["q"] ?: query["query"] ?: "") else forbidden()
                         "/calendar" -> if (authed) getCalendar(query["days"] ?: "14") else forbidden()
                         "/photo" -> if (authed) takePhoto(query["facing"] ?: "back") else forbidden()
+                        // Secreto de un MCP (token), cifrado en el Keystore. El agente lo
+                        // pide al conectar un servidor MCP con env ${SECRET:<id>}.
+                        "/secret" -> if (authed) getMcpSecret(query["ref"] ?: "") else forbidden()
                         else -> JSONObject().put("error", "unknown endpoint: $path")
                     }
                 } catch (e: Exception) {
@@ -146,6 +149,13 @@ class NativeToolsServer(private val context: Context, private val token: String 
 
     private fun forbidden(): JSONObject =
         JSONObject().put("error", "forbidden: missing or invalid token")
+
+    // ── Secreto de MCP (token del Keystore) ─────────────────────────────────────
+    private fun getMcpSecret(ref: String): JSONObject {
+        if (ref.isBlank()) return JSONObject().put("error", "missing ref")
+        val value = SecretStore.getMcpSecret(context, ref)
+        return JSONObject().put("value", value ?: "")
+    }
 
     private fun granted(permission: String): Boolean =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED

@@ -29,6 +29,34 @@ export interface McpToolDef {
 
 const PROTOCOL_VERSION = '2024-11-05';
 const REQUEST_TIMEOUT_MS = 30000;
+const MAX_STDERR_CHARS = 2000;
+
+/** Resuelve un secreto por id (ej: 'github') a su valor real, o null si no hay. */
+export type SecretResolver = (id: string) => Promise<string | null> | string | null;
+
+const SECRET_PLACEHOLDER = /^\$\{SECRET:([A-Za-z0-9_.:-]+)\}$/;
+
+/**
+ * Reemplaza los valores `${SECRET:<id>}` del env por el secreto real del
+ * Keystore. Los que no resuelven se dejan vacíos (el server MCP dará el error,
+ * que ahora capturamos por stderr). Así el archivo de config NUNCA guarda el token.
+ */
+async function resolveEnvSecrets(
+  env: Record<string, string> | undefined,
+  resolve: SecretResolver | undefined,
+): Promise<Record<string, string> | undefined> {
+  if (!env) return env;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    const m = typeof v === 'string' ? v.match(SECRET_PLACEHOLDER) : null;
+    if (m && resolve) {
+      out[k] = (await resolve(m[1])) ?? '';
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> };
 
@@ -38,6 +66,7 @@ class McpClient {
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private dead = false;
+  private stderrBuffer = '';
   tools: McpToolDef[] = [];
 
   constructor(
@@ -53,9 +82,19 @@ class McpClient {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child.stdout.on('data', (d: Buffer) => this.onData(d));
-    this.child.stderr.on('data', () => { /* logs del servidor: ignorar */ });
+    // Guardamos el stderr (acotado): es donde el servidor MCP dice por qué falló
+    // (ej: "GITHUB_PERSONAL_ACCESS_TOKEN no está seteado"), y el agente lo usa
+    // para pedirte el token en criollo en vez de tirar un error críptico.
+    this.child.stderr.on('data', (d: Buffer) => {
+      this.stderrBuffer = (this.stderrBuffer + d.toString('utf8')).slice(-MAX_STDERR_CHARS);
+    });
     this.child.on('error', (e) => this.die(`no se pudo iniciar: ${e.message}`));
     this.child.on('exit', (code) => this.die(`el servidor MCP terminó (código ${code ?? '?'})`));
+  }
+
+  /** Últimas líneas del stderr del servidor (para diagnosticar fallos de conexión). */
+  lastStderr(): string {
+    return this.stderrBuffer.trim();
   }
 
   private onData(chunk: Buffer): void {
@@ -147,22 +186,28 @@ class McpClient {
 export class McpManager {
   private clients: McpClient[] = [];
 
-  /** Conecta todos los servidores del config. Los que fallan no rompen al resto. */
+  /** Conecta todos los servidores del config. Los que fallan no rompen al resto.
+   *  `resolveSecret` mapea los `${SECRET:<id>}` del env a su valor del Keystore. */
   async connectAll(
     servers: Record<string, McpServerConfig> | undefined,
+    resolveSecret?: SecretResolver,
   ): Promise<{ connected: string[]; failed: Array<{ name: string; error: string }> }> {
     const connected: string[] = [];
     const failed: Array<{ name: string; error: string }> = [];
     for (const [name, cfg] of Object.entries(servers ?? {})) {
       if (!cfg?.command) { failed.push({ name, error: 'falta "command"' }); continue; }
-      const client = new McpClient(name, cfg.command, cfg.args ?? [], cfg.env);
+      const env = await resolveEnvSecrets(cfg.env, resolveSecret);
+      const client = new McpClient(name, cfg.command, cfg.args ?? [], env);
       try {
         await client.initialize();
         this.clients.push(client);
         connected.push(name);
       } catch (error: any) {
+        // El stderr del servidor suele decir el motivo real (falta un token, etc.).
+        const stderr = client.lastStderr();
+        const base = error?.message ?? 'fallo al conectar';
         client.close();
-        failed.push({ name, error: error?.message ?? 'fallo al conectar' });
+        failed.push({ name, error: stderr ? `${base} — ${stderr}` : base });
       }
     }
     return { connected, failed };

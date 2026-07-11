@@ -9,8 +9,12 @@ import android.os.Build
 import android.os.Environment
 import android.provider.Settings
 import android.webkit.JavascriptInterface
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -21,6 +25,10 @@ import org.json.JSONObject
  * Se expone en el WebView como `window.NovaClawNative`.
  */
 class ConnectorBridge(private val activity: Activity) {
+
+    /** Ejecuta JS en el WebView (lo setea MainActivity). Para devolver el
+     *  resultado de la huella al front por evento. */
+    var evalJs: ((String) -> Unit)? = null
 
     companion object {
         const val REQUEST_CODE = 4711
@@ -93,7 +101,83 @@ class ConnectorBridge(private val activity: Activity) {
     /** JSON array de los proveedores que tienen key guardada. */
     @JavascriptInterface
     fun apiKeyProviders(): String =
-        org.json.JSONArray(SecretStore.providersWithKeys(activity)).toString()
+        JSONArray(SecretStore.providersWithKeys(activity)).toString()
+
+    // ── Secretos de MCP (tokens) ────────────────────────────────────────────
+    // El VALOR nunca vuelve al WebView: solo se puede guardar, o consultar si
+    // existe. El token real lo lee únicamente el agente Node por loopback
+    // (NativeToolsServer /secret), no el front.
+
+    /** Guarda (cifrado en el Keystore) el token de un servidor MCP. */
+    @JavascriptInterface
+    fun saveMcpSecret(id: String, value: String) {
+        SecretStore.saveMcpSecret(activity, id, value)
+    }
+
+    /** ¿Hay un token guardado para ese MCP? (no devuelve el valor) */
+    @JavascriptInterface
+    fun hasMcpSecret(id: String): Boolean = SecretStore.hasMcpSecret(activity, id)
+
+    /** Borra el token de un MCP. */
+    @JavascriptInterface
+    fun clearMcpSecret(id: String) {
+        SecretStore.saveMcpSecret(activity, id, "")
+    }
+
+    /** JSON array de los ids de MCP con token guardado. */
+    @JavascriptInterface
+    fun mcpSecretIds(): String = JSONArray(SecretStore.mcpSecretIds(activity)).toString()
+
+    // ── Confirmación por huella (BiometricPrompt) ───────────────────────────
+    // Se usa al INSTALAR un MCP nuevo (corre código de terceros). El resultado
+    // vuelve al front por el evento 'novaclaw-biometric-result' con {requestId, ok}.
+
+    /** Dispara la huella/PIN. Si el equipo no tiene biometría, deja pasar (no
+     *  bloquear a quien no tiene hardware), informándolo. */
+    @JavascriptInterface
+    fun confirmWithBiometric(requestId: String, title: String, subtitle: String) {
+        activity.runOnUiThread {
+            val fa = activity as? FragmentActivity
+            val bm = BiometricManager.from(activity)
+            val allowed = BiometricManager.Authenticators.BIOMETRIC_WEAK or
+                BiometricManager.Authenticators.DEVICE_CREDENTIAL
+            val canAuth = bm.canAuthenticate(allowed) == BiometricManager.BIOMETRIC_SUCCESS
+            if (fa == null || !canAuth) {
+                dispatchBiometric(requestId, true, "sin-biometria")
+                return@runOnUiThread
+            }
+            val prompt = BiometricPrompt(
+                fa,
+                ContextCompat.getMainExecutor(activity),
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        dispatchBiometric(requestId, true, "ok")
+                    }
+                    override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                        dispatchBiometric(requestId, false, errString.toString())
+                    }
+                    // onAuthenticationFailed: un intento falló pero el prompt sigue; se ignora.
+                },
+            )
+            val info = BiometricPrompt.PromptInfo.Builder()
+                .setTitle(title.ifBlank { "Confirmá con tu huella" })
+                .setSubtitle(subtitle.ifBlank { "" })
+                .setAllowedAuthenticators(allowed)
+                .build()
+            try {
+                prompt.authenticate(info)
+            } catch (e: Exception) {
+                dispatchBiometric(requestId, false, e.message ?: "error de biometría")
+            }
+        }
+    }
+
+    private fun dispatchBiometric(requestId: String, ok: Boolean, detail: String) {
+        val payload = JSONObject().put("requestId", requestId).put("ok", ok).put("detail", detail)
+        val js = "window.dispatchEvent(new CustomEvent('novaclaw-biometric-result'," +
+            "{detail:$payload}));"
+        activity.runOnUiThread { evalJs?.invoke(js) }
+    }
 
     /** Abre los ajustes de la app para revocar permisos (Android no deja hacerlo por API). */
     @JavascriptInterface

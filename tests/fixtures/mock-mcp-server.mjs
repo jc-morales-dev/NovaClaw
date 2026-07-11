@@ -1,5 +1,10 @@
 // Servidor MCP mínimo por stdio, para tests. Implementa initialize, tools/list
-// y tools/call (una tool "echo") con JSON-RPC delimitado por saltos de línea.
+// y tools/call (tools "echo" y "token") con JSON-RPC delimitado por saltos de línea.
+// MOCK_FAIL=1 → escribe a stderr y sale antes de handshake (prueba de captura de stderr).
+if (process.env.MOCK_FAIL) {
+  process.stderr.write('MOCK_FAIL: falta el TOKEN de prueba\n');
+  process.exit(1);
+}
 let buffer = '';
 process.stdin.on('data', (d) => {
   buffer += d.toString('utf8');
@@ -32,6 +37,7 @@ function handle(msg) {
         result: {
           tools: [
             { name: 'echo', description: 'Devuelve el texto recibido', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
+            { name: 'token', description: 'Devuelve el MOCK_TOKEN del entorno', inputSchema: { type: 'object', properties: {} } },
           ],
         },
       });
@@ -39,6 +45,8 @@ function handle(msg) {
     case 'tools/call':
       if (msg.params?.name === 'echo') {
         send({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: `echo: ${msg.params?.arguments?.text ?? ''}` }] } });
+      } else if (msg.params?.name === 'token') {
+        send({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: `token: ${process.env.MOCK_TOKEN ?? '(none)'}` }] } });
       } else {
         send({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'tool desconocida' } });
       }

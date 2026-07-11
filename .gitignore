@@ -24,6 +24,7 @@ tmp/
 # NovaClaw runtime (no versionar)
 novaclaw.config.json
 novaclaw.sessions.json
+novaclaw.secrets.json
 _test_*
 _server_test.log
 proyecto-demo/

@@ -112,6 +112,43 @@ object SecretStore {
     fun providersWithKeys(context: Context): List<String> =
         loadMap(context).keys().asSequence().toList()
 
+    // ── Secretos de MCP (tokens de servidores) ──────────────────────────────
+    // Mismo cifrado AES-256/GCM, en un mapa aparte {mcpId: token}. El agente los
+    // pide por loopback (NativeToolsServer /secret) al conectar un MCP; el archivo
+    // de config solo guarda el placeholder ${SECRET:<id>}, nunca el token.
+    private const val PREF_MCP_MAP = "mcp_secrets_enc"
+
+    private fun loadMcpMap(context: Context): JSONObject {
+        val b64 = prefs(context).getString(PREF_MCP_MAP, null) ?: return JSONObject()
+        val dec = decrypt(b64) ?: return JSONObject()
+        return try { JSONObject(dec) } catch (_: Exception) { JSONObject() }
+    }
+
+    private fun storeMcpMap(context: Context, map: JSONObject) {
+        val enc = encrypt(map.toString()) ?: return
+        prefs(context).edit().putString(PREF_MCP_MAP, enc).apply()
+    }
+
+    /** Guarda (o borra si vacío) el secreto de un MCP por id. */
+    fun saveMcpSecret(context: Context, id: String, value: String) {
+        val map = loadMcpMap(context)
+        if (value.isBlank()) map.remove(id) else map.put(id, value)
+        storeMcpMap(context, map)
+    }
+
+    /** Devuelve el secreto de un MCP por id, o null si no hay. */
+    fun getMcpSecret(context: Context, id: String): String? {
+        val v = loadMcpMap(context).optString(id, "")
+        return v.ifBlank { null }
+    }
+
+    fun hasMcpSecret(context: Context, id: String): Boolean =
+        !getMcpSecret(context, id).isNullOrBlank()
+
+    /** Ids de MCP que tienen un secreto guardado. */
+    fun mcpSecretIds(context: Context): List<String> =
+        loadMcpMap(context).keys().asSequence().toList()
+
     /**
      * Migra la key ÚNICA vieja (esquema previo) al mapa, bajo `provider`. Idempotente.
      * Devuelve la key migrada o null si no había.

@@ -43,6 +43,27 @@ export type VerifyResult = { ok: boolean; models: ModelInfo[]; error?: string };
 export type McpServersConfig = Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
 export type McpSaveResult = { connected: string[]; failed: Array<{ name: string; error: string }>; tools: Array<{ name: string; server: string }> };
 export type McpStatus = { tools: Array<{ name: string; server: string; description?: string }>; servers: string[] };
+export type McpCatalogItem = {
+ id: string;
+ label: string;
+ description: string;
+ verified: boolean;
+ needsSecret: boolean;
+ secretLabel: string | null;
+ secretHelpUrl: string | null;
+ secretHint: string | null;
+ authType: 'none' | 'token' | 'device';
+};
+export type McpConnectPayload = {
+ catalogId?: string;
+ id?: string;
+ command?: string;
+ args?: string[];
+ secretEnv?: string;
+ /** Solo en dev/PC: el valor del secreto. En el teléfono va al Keystore por el bridge. */
+ secretValueDev?: string;
+};
+export type McpConnectResult = { ok: boolean; server: string; tools: Array<{ name: string; description?: string }>; needsSecret?: boolean; error?: string | null };
 
 type RuntimeSnapshot = {
  agent: { status: 'stopped' | 'running'; mode: 'remote' | 'local'; label: string };
@@ -91,6 +112,12 @@ interface PlatformAdapter {
  getMcpConfig(): Promise<{ mcpServers: McpServersConfig }>;
  saveMcpConfig(servers: McpServersConfig): Promise<McpSaveResult>;
  getMcpStatus(): Promise<McpStatus>;
+ /** Catálogo curado de MCP conocidos (para los botones "Conectar"). */
+ getMcpCatalog(): Promise<{ catalog: McpCatalogItem[] }>;
+ /** Conecta un MCP (desde el catálogo por catalogId, o manual). */
+ connectMcp(payload: McpConnectPayload): Promise<McpConnectResult>;
+ /** Quita un MCP conectado. */
+ disconnectMcp(id: string): Promise<{ ok: boolean }>;
  /** Deshace el último archivo escrito/editado por el agente. */
  undo(): Promise<{ ok: boolean; path?: string; message?: string }>;
 }
@@ -281,6 +308,16 @@ const webAdapter: PlatformAdapter = {
  return r.json();
  },
  async getMcpStatus() { const r = await apiFetch('/api/mcp'); return r.json(); },
+ async getMcpCatalog() { const r = await apiFetch('/api/mcp/catalog'); return r.json(); },
+ async connectMcp(payload) {
+ const r = await apiFetch('/api/mcp/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+ if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error ?? 'No se pudo conectar el MCP.'); }
+ return r.json();
+ },
+ async disconnectMcp(id) {
+ const r = await apiFetch('/api/mcp/disconnect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+ return r.json();
+ },
  async undo() { const r = await apiFetch('/api/undo', { method: 'POST' }); return r.json(); },
 };
 
@@ -682,6 +719,9 @@ const capacitorAdapter: PlatformAdapter = {
  async getMcpConfig() { return { mcpServers: {} }; },
  async saveMcpConfig() { return { connected: [], failed: [], tools: [] }; },
  async getMcpStatus() { return { tools: [], servers: [] }; },
+ async getMcpCatalog() { return { catalog: [] }; },
+ async connectMcp() { return { ok: false, server: '', tools: [] }; },
+ async disconnectMcp() { return { ok: false }; },
  async undo() { return { ok: false, message: 'Deshacer no está disponible en este modo.' }; },
 };
 

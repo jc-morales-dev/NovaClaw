@@ -18,10 +18,16 @@ import {
   Calendar,
   Plug,
   Wrench,
+  Plus,
+  Trash2,
+  ShieldCheck,
+  ExternalLink,
+  Fingerprint,
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { translations } from '../translations';
-import { platform, type ProviderConfig, type ProviderInfo, type ModelInfo } from '../platform';
+import { platform, type ProviderConfig, type ProviderInfo, type ModelInfo, type McpCatalogItem } from '../platform';
+import { saveMcpSecret, hasMcpSecret, clearMcpSecret, confirmBiometric, hasNativeMcp } from '../mcpNative';
 import {
   getConnectors,
   requestConnector,
@@ -61,13 +67,111 @@ export default function Settings() {
   const [connectors, setConnectors] = useState<ConnectorState>(() => getConnectors());
   const nativeConnectors = hasNativeConnectors();
 
-  // MCP: herramientas externas (Fase 2). Config en JSON estilo Claude Desktop.
-  const [mcpJson, setMcpJson] = useState('{\n  "mcpServers": {}\n}');
+  // MCP: herramientas externas. Catálogo curado + formulario simple (sin JSON).
+  const [mcpCatalog, setMcpCatalog] = useState<McpCatalogItem[]>([]);
   const [mcpTools, setMcpTools] = useState<Array<{ name: string; server: string }>>([]);
-  const [mcpSaving, setMcpSaving] = useState(false);
+  const [mcpServers, setMcpServers] = useState<string[]>([]);
+  const [mcpBusy, setMcpBusy] = useState('');   // id que se está conectando/quitando
   const [mcpError, setMcpError] = useState('');
+  const [secretDrafts, setSecretDrafts] = useState<Record<string, string>>({});
+  const [savedSecrets, setSavedSecrets] = useState<Record<string, boolean>>({});
+  // Formulario manual (avanzado).
+  const [showManual, setShowManual] = useState(false);
+  const [manName, setManName] = useState('');
+  const [manCmd, setManCmd] = useState('npx');
+  const [manArgs, setManArgs] = useState('');
+  const [manSecretEnv, setManSecretEnv] = useState('');
+  const [manSecretVal, setManSecretVal] = useState('');
+  // JSON crudo (súper avanzado, escondido).
+  const [showJson, setShowJson] = useState(false);
+  const [mcpJson, setMcpJson] = useState('{\n  "mcpServers": {}\n}');
 
-  async function handleSaveMcp() {
+  async function refreshMcp() {
+    try {
+      const s = await platform.getMcpStatus();
+      setMcpTools((s.tools ?? []).map((t) => ({ name: t.name, server: t.server })));
+      setMcpServers(s.servers ?? []);
+    } catch { /* ignore */ }
+  }
+
+  function toolCountFor(server: string): number {
+    return mcpTools.filter((t) => t.server === server).length;
+  }
+
+  /** Conecta un MCP del catálogo (token → Keystore, huella, conectar). */
+  async function connectCatalog(item: McpCatalogItem) {
+    setMcpError('');
+    const alreadyHasSecret = hasMcpSecret(item.id) || savedSecrets[item.id];
+    const token = (secretDrafts[item.id] ?? '').trim();
+    if (item.needsSecret && !alreadyHasSecret && !token) {
+      setMcpError(isSpanish ? `Falta el ${item.secretLabel ?? 'token'}.` : `Missing the ${item.secretLabel ?? 'token'}.`);
+      return;
+    }
+    setMcpBusy(item.id);
+    try {
+      if (item.needsSecret && token) {
+        saveMcpSecret(item.id, token);                 // Keystore (teléfono) / no-op web
+        setSavedSecrets((s) => ({ ...s, [item.id]: true }));
+      }
+      const ok = await confirmBiometric(
+        isSpanish ? `Instalar ${item.label}` : `Install ${item.label}`,
+        isSpanish ? 'Confirmá con tu huella' : 'Confirm with your fingerprint',
+      );
+      if (!ok) { setMcpError(isSpanish ? 'Cancelado.' : 'Cancelled.'); return; }
+      const payload: any = { catalogId: item.id };
+      if (item.needsSecret && token && !hasNativeMcp()) payload.secretValueDev = token; // dev/PC
+      const res = await platform.connectMcp(payload);
+      if (!res.ok) setMcpError(res.error ?? (isSpanish ? 'No se pudo conectar. Revisá el token.' : 'Could not connect. Check the token.'));
+      setSecretDrafts((d) => ({ ...d, [item.id]: '' }));
+      await refreshMcp();
+    } catch (error: any) {
+      setMcpError(error?.message ?? 'Error');
+    } finally {
+      setMcpBusy('');
+    }
+  }
+
+  /** Conecta un MCP manual (formulario, no JSON). */
+  async function connectManual() {
+    setMcpError('');
+    const id = manName.trim();
+    if (!id || !manCmd.trim()) { setMcpError(isSpanish ? 'Poné nombre y comando.' : 'Enter a name and a command.'); return; }
+    setMcpBusy(id);
+    try {
+      const hasSecret = Boolean(manSecretEnv.trim() && manSecretVal.trim());
+      if (hasSecret) saveMcpSecret(id, manSecretVal.trim());
+      const ok = await confirmBiometric(
+        isSpanish ? `Instalar ${id}` : `Install ${id}`,
+        isSpanish ? 'Confirmá con tu huella' : 'Confirm with your fingerprint',
+      );
+      if (!ok) { setMcpError(isSpanish ? 'Cancelado.' : 'Cancelled.'); return; }
+      const payload: any = {
+        id,
+        command: manCmd.trim(),
+        args: manArgs.trim() ? manArgs.trim().split(/\s+/) : [],
+        secretEnv: manSecretEnv.trim() || undefined,
+      };
+      if (hasSecret && !hasNativeMcp()) payload.secretValueDev = manSecretVal.trim();
+      const res = await platform.connectMcp(payload);
+      if (!res.ok) { setMcpError(res.error ?? (isSpanish ? 'No se pudo conectar.' : 'Could not connect.')); }
+      else { setManName(''); setManArgs(''); setManSecretEnv(''); setManSecretVal(''); setShowManual(false); }
+      await refreshMcp();
+    } catch (error: any) {
+      setMcpError(error?.message ?? 'Error');
+    } finally {
+      setMcpBusy('');
+    }
+  }
+
+  async function disconnectMcp(id: string) {
+    setMcpBusy(id);
+    try { await platform.disconnectMcp(id); clearMcpSecret(id); setSavedSecrets((s) => ({ ...s, [id]: false })); await refreshMcp(); }
+    catch (error: any) { setMcpError(error?.message ?? 'Error'); }
+    finally { setMcpBusy(''); }
+  }
+
+  /** Camino súper-avanzado: pegar el JSON crudo (formato Claude Desktop). */
+  async function handleSaveMcpJson() {
     setMcpError('');
     let servers: Record<string, unknown>;
     try {
@@ -77,17 +181,15 @@ export default function Settings() {
       setMcpError(isSpanish ? 'JSON inválido.' : 'Invalid JSON.');
       return;
     }
-    setMcpSaving(true);
+    setMcpBusy('__json__');
     try {
       const r = await platform.saveMcpConfig(servers as any);
-      setMcpTools(r.tools ?? []);
-      if (r.failed?.length) {
-        setMcpError((isSpanish ? 'Falló: ' : 'Failed: ') + r.failed.map((f) => `${f.name} (${f.error})`).join(', '));
-      }
+      if (r.failed?.length) setMcpError((isSpanish ? 'Falló: ' : 'Failed: ') + r.failed.map((f) => `${f.name} (${f.error})`).join(', '));
+      await refreshMcp();
     } catch (error: any) {
       setMcpError(error?.message ?? 'Error');
     } finally {
-      setMcpSaving(false);
+      setMcpBusy('');
     }
   }
 
@@ -104,7 +206,11 @@ export default function Settings() {
     loadConfig();
     platform.getProviders().then((r) => setProviders(r.providers ?? [])).catch(() => {});
     platform.getMcpConfig().then((r) => setMcpJson(JSON.stringify({ mcpServers: r.mcpServers ?? {} }, null, 2))).catch(() => {});
-    platform.getMcpStatus().then((s) => setMcpTools((s.tools ?? []).map((t) => ({ name: t.name, server: t.server })))).catch(() => {});
+    platform.getMcpCatalog().then((r) => setMcpCatalog(r.catalog ?? [])).catch(() => {});
+    platform.getMcpStatus().then((s) => {
+      setMcpTools((s.tools ?? []).map((t) => ({ name: t.name, server: t.server })));
+      setMcpServers(s.servers ?? []);
+    }).catch(() => {});
     platform.getApiKeyProviders().then(setKeyProviders).catch(() => {});
   }, []);
 
@@ -570,7 +676,7 @@ export default function Settings() {
 
             {/* MCP modal: editor de config + tools conectadas */}
             {activeModal === 'mcp' && (
-              <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
+              <div className="space-y-3 max-h-[72vh] overflow-y-auto pr-1">
                 {/* Lo más fácil: pedirle al agente */}
                 <div className="rounded-2xl border border-[#FF7A1A]/25 bg-[#FF7A1A]/[0.06] p-3.5">
                   <p className="text-[13px] text-zinc-200 leading-relaxed">
@@ -582,48 +688,135 @@ export default function Settings() {
                     {isSpanish ? ' y lo instala solo.' : ' and it installs it for you.'}
                   </p>
                 </div>
-                {mcpTools.length > 0 && (
+
+                {mcpError && <p className="text-red-400 text-[12px] leading-snug">{mcpError}</p>}
+
+                {/* Conectados */}
+                {mcpServers.length > 0 && (
                   <div className="space-y-1.5">
-                    <p className="text-emerald-400 text-[12px] font-semibold">
-                      {mcpTools.length} {isSpanish ? 'herramientas conectadas:' : 'tools connected:'}
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {mcpTools.map((tl) => (
-                        <span key={tl.name} className="text-[10.5px] font-mono px-2 py-1 rounded-lg bg-zinc-800 text-zinc-300">{tl.name}</span>
-                      ))}
-                    </div>
+                    <p className="text-emerald-400 text-[12px] font-semibold">{isSpanish ? 'Conectados' : 'Connected'}</p>
+                    {mcpServers.map((srv) => (
+                      <div key={srv} className="flex items-center justify-between rounded-xl bg-zinc-900 border border-zinc-800 px-3 py-2.5">
+                        <div className="min-w-0">
+                          <p className="text-[13px] font-medium text-zinc-100 truncate">{srv}</p>
+                          <p className="text-[11px] text-zinc-500">{toolCountFor(srv)} {isSpanish ? 'herramientas' : 'tools'}</p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={mcpBusy === srv}
+                          onClick={() => disconnectMcp(srv)}
+                          className="shrink-0 p-2 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
+                          aria-label={isSpanish ? 'Quitar' : 'Remove'}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 )}
-                <p className="text-zinc-500 text-[12px] leading-relaxed pt-1">
-                  {isSpanish
-                    ? 'Avanzado: también podés pegar la config a mano (formato Claude Desktop):'
-                    : 'Advanced: you can also paste the config manually (Claude Desktop format):'}
-                </p>
-                <pre className="text-[10.5px] text-zinc-500 bg-zinc-950 border border-zinc-800 rounded-xl p-3 overflow-x-auto leading-snug">{`{
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"]
-    }
-  }
-}`}</pre>
-                <textarea
-                  value={mcpJson}
-                  onChange={(e) => setMcpJson(e.target.value)}
-                  spellCheck={false}
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  className="w-full h-44 bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-[12px] font-mono text-zinc-200 resize-none focus:outline-none focus:border-[#FF7A1A]/50"
-                />
-                {mcpError && <p className="text-red-400 text-[12px] leading-snug">{mcpError}</p>}
+
+                {/* Catálogo */}
+                <p className="text-zinc-400 text-[12px] font-semibold pt-1">{isSpanish ? 'Conectar una herramienta' : 'Connect a tool'}</p>
+                <div className="space-y-2">
+                  {mcpCatalog.filter((c) => !mcpServers.includes(c.id)).map((item) => {
+                    const stored = hasMcpSecret(item.id) || savedSecrets[item.id];
+                    const needsInput = item.needsSecret && !stored;
+                    return (
+                      <div key={item.id} className="rounded-xl bg-zinc-900 border border-zinc-800 p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <p className="text-[13px] font-medium text-zinc-100 truncate">{item.label}</p>
+                              {item.verified && <ShieldCheck size={13} className="text-emerald-400 shrink-0" />}
+                            </div>
+                            <p className="text-[11px] text-zinc-500 leading-snug">{item.description}</p>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={mcpBusy === item.id}
+                            onClick={() => connectCatalog(item)}
+                            className="shrink-0 flex items-center gap-1 bg-[#FF7A1A] text-[#1A0E02] text-[12px] font-semibold px-3 py-1.5 rounded-lg hover:brightness-110 disabled:opacity-50 transition"
+                          >
+                            {mcpBusy === item.id ? (isSpanish ? '…' : '…') : (<><Plus size={13} /> {isSpanish ? 'Conectar' : 'Connect'}</>)}
+                          </button>
+                        </div>
+                        {needsInput && (
+                          <div className="space-y-1.5">
+                            <input
+                              type="password"
+                              value={secretDrafts[item.id] ?? ''}
+                              onChange={(e) => setSecretDrafts((d) => ({ ...d, [item.id]: e.target.value }))}
+                              placeholder={item.secretLabel ?? (isSpanish ? 'Token' : 'Token')}
+                              spellCheck={false}
+                              autoCapitalize="none"
+                              autoCorrect="off"
+                              className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50"
+                            />
+                            {(item.secretHint || item.secretHelpUrl) && (
+                              <p className="text-[10.5px] text-zinc-500 leading-snug">
+                                {item.secretHint}
+                                {item.secretHelpUrl && (
+                                  <> · <a href={item.secretHelpUrl} target="_blank" rel="noreferrer" className="text-[#FFB25C] inline-flex items-center gap-0.5">{isSpanish ? 'generar' : 'get one'} <ExternalLink size={10} /></a></>
+                                )}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Agregar manualmente (formulario, no JSON) */}
                 <button
                   type="button"
-                  disabled={mcpSaving}
-                  onClick={handleSaveMcp}
-                  className="w-full bg-[#FF7A1A] text-[#1A0E02] font-semibold py-3 rounded-xl hover:brightness-110 disabled:opacity-50 transition-colors"
+                  onClick={() => setShowManual((v) => !v)}
+                  className="w-full flex items-center justify-center gap-1.5 text-[12px] text-zinc-400 hover:text-zinc-200 py-2 transition-colors"
                 >
-                  {mcpSaving ? (isSpanish ? 'Conectando…' : 'Connecting…') : (isSpanish ? 'Guardar y conectar' : 'Save & connect')}
+                  <Plus size={14} /> {isSpanish ? 'Agregar manualmente' : 'Add manually'}
                 </button>
+                {showManual && (
+                  <div className="rounded-xl bg-zinc-900 border border-zinc-800 p-3 space-y-2">
+                    <input value={manName} onChange={(e) => setManName(e.target.value)} placeholder={isSpanish ? 'Nombre (ej: github)' : 'Name (e.g. github)'} spellCheck={false} autoCapitalize="none" autoCorrect="off" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
+                    <input value={manCmd} onChange={(e) => setManCmd(e.target.value)} placeholder="npx" spellCheck={false} autoCapitalize="none" autoCorrect="off" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] font-mono text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
+                    <input value={manArgs} onChange={(e) => setManArgs(e.target.value)} placeholder={isSpanish ? 'Argumentos (ej: -y @scope/paquete)' : 'Args (e.g. -y @scope/package)'} spellCheck={false} autoCapitalize="none" autoCorrect="off" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] font-mono text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
+                    <div className="grid grid-cols-2 gap-2">
+                      <input value={manSecretEnv} onChange={(e) => setManSecretEnv(e.target.value)} placeholder={isSpanish ? 'Variable (opcional)' : 'Env var (optional)'} spellCheck={false} autoCapitalize="none" autoCorrect="off" className="bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] font-mono text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
+                      <input type="password" value={manSecretVal} onChange={(e) => setManSecretVal(e.target.value)} placeholder={isSpanish ? 'Token (opcional)' : 'Token (optional)'} spellCheck={false} autoCapitalize="none" autoCorrect="off" className="bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[12px] text-zinc-200 focus:outline-none focus:border-[#FF7A1A]/50" />
+                    </div>
+                    <button type="button" disabled={mcpBusy === manName.trim()} onClick={connectManual} className="w-full bg-[#FF7A1A] text-[#1A0E02] font-semibold py-2.5 rounded-lg hover:brightness-110 disabled:opacity-50 transition-colors text-[13px]">
+                      {isSpanish ? 'Conectar' : 'Connect'}
+                    </button>
+                  </div>
+                )}
+
+                {/* Nota de seguridad: la huella */}
+                <p className="text-[10.5px] text-zinc-500 leading-snug flex items-start gap-1.5 pt-1">
+                  <Fingerprint size={13} className="text-zinc-400 shrink-0 mt-0.5" />
+                  {isSpanish
+                    ? 'Al instalar una herramienta nueva te pedimos tu huella. Los tokens se guardan cifrados en el teléfono.'
+                    : 'Installing a new tool asks for your fingerprint. Tokens are stored encrypted on the phone.'}
+                </p>
+
+                {/* Súper-avanzado: JSON crudo (escondido) */}
+                <button type="button" onClick={() => setShowJson((v) => !v)} className="w-full text-[11px] text-zinc-600 hover:text-zinc-400 py-1 transition-colors">
+                  {isSpanish ? 'Avanzado: editar JSON' : 'Advanced: edit JSON'}
+                </button>
+                {showJson && (
+                  <div className="space-y-2">
+                    <textarea
+                      value={mcpJson}
+                      onChange={(e) => setMcpJson(e.target.value)}
+                      spellCheck={false}
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      className="w-full h-40 bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-[12px] font-mono text-zinc-200 resize-none focus:outline-none focus:border-[#FF7A1A]/50"
+                    />
+                    <button type="button" disabled={mcpBusy === '__json__'} onClick={handleSaveMcpJson} className="w-full bg-zinc-800 text-zinc-100 font-semibold py-2.5 rounded-lg hover:bg-zinc-700 disabled:opacity-50 transition-colors text-[13px]">
+                      {mcpBusy === '__json__' ? (isSpanish ? 'Conectando…' : 'Connecting…') : (isSpanish ? 'Guardar JSON' : 'Save JSON')}
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 

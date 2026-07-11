@@ -144,6 +144,8 @@ class MainActivity : AppCompatActivity() {
         }
         // Puente de conectores: la UI pide permisos reales vía window.NovaClawNative.
         wv.addJavascriptInterface(connectors, "NovaClawNative")
+        // El bridge devuelve resultados asíncronos (huella) al front por JS.
+        connectors.evalJs = { js -> wv.post { wv.evaluateJavascript(js, null) } }
         // Mismo fondo que la UI para que no haya flash blanco al aparecer.
         wv.setBackgroundColor(android.graphics.Color.parseColor("#0B0908"))
         wv.webViewClient = object : WebViewClient() {
