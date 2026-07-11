@@ -17,6 +17,34 @@
 
 ---
 
+## Estado de implementación (11/jul — sesión autónoma)
+
+**Hecho, verificado (tsc + tests + build) y respaldado en GitHub:**
+
+| Ítem | Qué | Commit |
+|---|---|---|
+| ✅ B1 | Prompt caching (Anthropic: system+historial; OpenAI cachea solo) | d56198d |
+| ✅ B2 | Reintentos con backoff (429/5xx/red, respeta Retry-After) | d56198d |
+| ✅ Fix | Adaptive thinking para Opus 4.8 (antes daba 400 → corría sin pensar) | d56198d |
+| ✅ B5 | Multi-edit atómico (`file_edit_multi`) | d56198d |
+| ✅ B3 | Verificación obligatoria (empuja a diagnostics/ejecutar antes de cerrar) | c30e912 |
+| ✅ B4 | Compactación fina (preserva rutas/comandos/plan, 1024→2048) | c30e912 |
+| ✅ B8 | Subagentes en paralelo (fan-out) | a4b9b2a |
+| ✅ B9 | Compactación por presupuesto de tokens (~100k) | fa6530f |
+| ✅ B11 | Prompt reforzado (paralelo + multi-edit) | (este commit) |
+
+**Pendiente (necesitan más superficie / validación en el OPPO real, mejor como su propio chunk):**
+
+- ⏳ **B6 Skills on-demand** — requiere escanear `skills/` e inyectar el índice al system prompt (toca server.ts `getProjectContext` + camino WebView).
+- ⏳ **B7 Hooks PostToolUse** — auto-formatear/lint tras editar; toca el executor real (tools.ts) que corre en el teléfono → conviene validar en el OPPO antes de soltarlo.
+- ⏳ **B10 Streaming token-por-token** — toca modelClient (stream:true) + SSE del server + UI; **necesita prueba en el teléfono** (riesgo de UI), mejor hacerlo con Julio presente.
+
+**Resumen honesto:** quedaron cerrados **todos los ítems de alto impacto en el RESULTADO** (Nivel 1 y 2 del plan) + el bonus crítico de thinking. Lo que falta (B6/B7/B10) es capacidad extra y percepción, y toca código que corre en el teléfono → se dejan para validar en el OPPO.
+
+---
+
+---
+
 ## 1. Qué YA está a la par de Claude Code (NO reinventar)
 
 | Capacidad | Estado en NovaClaw |
