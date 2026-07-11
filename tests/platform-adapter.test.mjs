@@ -44,4 +44,20 @@ assert.doesNotMatch(
   'server.ts must not depend on an embedded API key (BYOK only)',
 );
 
+// El guard BYOK cubre también los módulos del server (donde vive la config ahora).
+{
+  const { readdir } = await import('node:fs/promises');
+  const serverDir = new URL('../src/server/', import.meta.url);
+  const files = await readdir(serverDir, { recursive: true });
+  for (const file of files) {
+    if (!String(file).endsWith('.ts')) continue;
+    const source = await readFile(new URL(String(file).replace(/\\/g, '/'), serverDir), 'utf8');
+    assert.doesNotMatch(
+      source,
+      /embeddedKey|getEmbeddedZenKey/,
+      `src/server/${file} must not depend on an embedded API key (BYOK only)`,
+    );
+  }
+}
+
 console.log('platform-adapter.test.mjs passed');
