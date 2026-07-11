@@ -99,6 +99,27 @@ const READ_ONLY_TOOLS = new Set([
 
 type ConfigSnapshot = { providerId: string; apiKey: string; model: string };
 
+// Traduce un fallo del modelo a un mensaje claro y accionable para el usuario:
+// distingue falta de key / key inválida / sin internet, y siempre apunta a dónde
+// resolverlo. Sin esto, un usuario nuevo veía "fetch failed" y no sabía qué hacer.
+function friendlyModelError(error: any, apiKey: string): string {
+  const raw = String(error?.message ?? error ?? '').toLowerCase();
+  const settings = '\n\nAbrí **Ajustes → Modelo de IA** para configurarlo.';
+  if (!apiKey?.trim()) {
+    return 'Todavía no configuraste un modelo de IA (falta la API key).' + settings;
+  }
+  if (raw.includes('401') || raw.includes('403') || raw.includes('unauthorized') ||
+      raw.includes('invalid') || raw.includes('api key') || raw.includes('forbidden')) {
+    return 'Tu API key no es válida o venció, o el modelo elegido no está disponible con esa cuenta.' + settings;
+  }
+  if (raw.includes('fetch failed') || raw.includes('network') || raw.includes('enotfound') ||
+      raw.includes('timeout') || raw.includes('etimedout') || raw.includes('econnrefused') ||
+      raw.includes('getaddrinfo') || raw.includes('socket')) {
+    return 'No pude conectarme con el modelo. Revisá tu conexión a internet e intentá de nuevo.';
+  }
+  return `No se pudo contactar al modelo: ${error?.message ?? 'error'}.` + settings;
+}
+
 interface NativeRuntimeOptions {
   workspaceRoot: string;
   getConfig: () => ConfigSnapshot;
@@ -362,7 +383,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
           events.push({ type: 'message', message: '⏹️ Respuesta detenida.' });
           return { events };
         }
-        const msg = `No se pudo contactar al modelo: ${error?.message ?? 'error'}`;
+        const msg = friendlyModelError(error, cfg.apiKey);
         session.history.push({ role: 'assistant', content: msg });
         events.push({ type: 'message', message: msg });
         return { events };

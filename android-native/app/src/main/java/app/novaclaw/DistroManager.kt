@@ -95,12 +95,26 @@ class DistroManager(
         //    solo si no está ya bajado y verificado.
         if (!tarGz.exists() || sha256(tarGz) != tb.sha256) {
             onProgress("Descargando el entorno Linux completo (~30 MB)…")
-            download(tb.url, tarGz, onProgress)
-            onProgress("Verificando la descarga…")
-            val got = sha256(tarGz)
-            if (got != tb.sha256) {
+            // Reintentos: en redes flojas la descarga se corta; en vez de romper el
+            // primer arranque, reintentamos unas veces antes de rendirnos.
+            var lastErr: Exception? = null
+            var ok = false
+            for (attempt in 1..3) {
+                try {
+                    download(tb.url, tarGz, onProgress)
+                    if (sha256(tarGz) == tb.sha256) { ok = true; break }
+                    onProgress("La descarga quedó incompleta, reintentando ($attempt/3)…")
+                } catch (e: Exception) {
+                    lastErr = e
+                    onProgress("Fallo de red, reintentando ($attempt/3)…")
+                }
                 tarGz.delete()
-                throw IllegalStateException("La descarga del entorno se corrompió (sha256 no coincide).")
+            }
+            if (!ok) {
+                throw IllegalStateException(
+                    "No se pudo descargar el entorno Linux. Revisá tu conexión e intentá de nuevo." +
+                        (lastErr?.message?.let { " ($it)" } ?: ""),
+                )
             }
         }
 
@@ -140,8 +154,13 @@ class DistroManager(
         // `musl` aporta el loader /lib/ld-musl-aarch64.so.1: muchos CLIs modernos
         // (incluido el binario nativo de Claude Code) se distribuyen musl-linked y
         // sin ese loader dan "required file not found" sobre un rootfs glibc.
+        // `timeout` (coreutils, viene en ubuntu-base) evita que un apt colgado bajo
+        // proot deje el primer arranque girando para siempre: si se pasa, muere,
+        // node no queda instalado, y el setup muestra error + Reintentar en vez de
+        // un spinner eterno.
         val apt = enter(
-            "apt-get update && apt-get install -y --no-install-recommends nodejs npm ca-certificates musl " +
+            "timeout 300 apt-get update && " +
+                "timeout 1200 apt-get install -y --no-install-recommends nodejs npm ca-certificates musl " +
                 "; node --version",
             onLine = { onProgress("· $it") },
         )

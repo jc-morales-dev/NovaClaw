@@ -1,7 +1,12 @@
 package app.novaclaw
 
 import android.annotation.SuppressLint
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.View
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -111,7 +116,13 @@ class MainActivity : AppCompatActivity() {
                     Thread.sleep(1200)
                 }
 
-                runOnUiThread { showWebApp() }
+                runOnUiThread {
+                    showWebApp()
+                    // Pedir que el sistema NO mate el agente en segundo plano. Sin
+                    // esto, ColorOS (y otros OEM agresivos) matan el ForegroundService
+                    // a los minutos y cortan al agente a mitad de una tarea.
+                    ensureBatteryExemption()
+                }
             } catch (e: Exception) {
                 log("❌ ERROR: ${e.message}")
                 log(android.util.Log.getStackTraceString(e))
@@ -119,6 +130,30 @@ class MainActivity : AppCompatActivity() {
             } finally {
                 isRunning.set(false)
             }
+        }
+    }
+
+    /**
+     * Pide (una sola vez) que el sistema exima a NovaClaw de la optimización de
+     * batería, para que el ForegroundService del agente no lo maten en background.
+     * En OEM agresivos como ColorOS esto es lo que evita que "el agente se corte".
+     * Es aditivo: si el usuario lo rechaza, la app funciona igual (pero puede
+     * morir en background); no se vuelve a molestar (flag persistido).
+     */
+    private fun ensureBatteryExemption() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (pm.isIgnoringBatteryOptimizations(packageName)) return
+            val prefs = getSharedPreferences("novaclaw_prefs", MODE_PRIVATE)
+            if (prefs.getBoolean("asked_battery_v1", false)) return
+            prefs.edit().putBoolean("asked_battery_v1", true).apply()
+            @SuppressLint("BatteryLife")
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            android.util.Log.w("NovaClaw/Main", "No se pudo pedir excepción de batería: ${e.message}")
         }
     }
 
