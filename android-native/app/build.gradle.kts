@@ -20,12 +20,19 @@ android {
     defaultConfig {
         applicationId = "app.novaclaw"
         minSdk = 24
-        // targetSdk 28 permite ejecutar binarios desde el data dir de la app.
-        // Android 10+ (targetSdk 29+) impone W^X y lo bloquea vía SELinux.
-        // Termux (F-Droid) usa el mismo enfoque. Se distribuye por sideload/GitHub, no Play.
-        targetSdk = 28
-        versionCode = 1
-        versionName = "0.1.0-fase1"
+        // targetSdk 34 por defecto: la app ya NO depende del truco de targetSdk 28.
+        // En 29+ Android impone W^X (SELinux) y NO se pueden ejecutar binarios desde
+        // el data dir; NovaClaw lo sortea corriendo todo bajo `proot` (binario en
+        // nativeLibraryDir, ejecutable en cualquier targetSdk). Ver RuntimeManager.
+        //
+        // Requisito de build: correr scripts/fetch-proot-so.sh para poblar
+        // src/main/jniLibs con proot + loader ANTES de compilar el APK de 34.
+        //
+        // Escape hatch: para reproducir el camino DIRECT histórico (validado en el
+        // OPPO, sin proot), compilá con -Pnovaclaw.targetSdk=28.
+        targetSdk = (project.findProperty("novaclaw.targetSdk") as String?)?.toInt() ?: 34
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     // Un APK por arquitectura: cada flavor empaqueta SOLO su bootstrap
@@ -86,6 +93,15 @@ android {
     // No comprimir el bootstrap en assets: se lee directo por streaming.
     androidResources {
         noCompress += listOf("zip")
+    }
+
+    // proot + loader viajan como .so en jniLibs. useLegacyPackaging=true fuerza a
+    // Android a EXTRAERLOS al disco (nativeLibraryDir), condición para poder
+    // ejecutarlos: un binario dentro del APK comprimido no tiene ruta ejecutable.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 
     // NovaClaw usa targetSdk 28 a propósito (ejecutar binarios sin root) y se

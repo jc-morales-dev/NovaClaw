@@ -14,20 +14,96 @@ import kotlin.concurrent.thread
 /**
  * Ejecuta comandos dentro del entorno Linux embebido (bootstrap de Termux).
  *
- * En targetSdk 28 los binarios del prefix se ejecutan directamente (Android no
- * impone W^X para esta targetSdk). proot se agregará en fases posteriores para
- * montar un rootfs Debian completo; para la Fase 1 alcanza con el shell nativo.
+ * Dos modos de ejecución (se elige solo, ver [detectExecMode]):
+ *
+ *  - DIRECT: se ejecutan los binarios del prefix directamente. Solo funciona si
+ *    la app apunta a targetSdk ≤ 28 (Android no impone W^X para esas apps). Es
+ *    el camino histórico, validado en el OPPO.
+ *
+ *  - PROOT: para targetSdk ≥ 29 (Android 10+), donde SELinux bloquea ejecutar
+ *    binarios desde el dir de datos (W^X). Se ejecuta todo bajo `proot`, cuyo
+ *    binario + loader viven en `nativeLibraryDir` (extraído del APK, de solo
+ *    lectura y EJECUTABLE en cualquier targetSdk). proot carga los ELF del
+ *    prefix con su propio loader, sorteando la restricción. Es la técnica de
+ *    proot-distro / UserLAnd / Andronix, y lo que destraba subir a targetSdk 34.
  */
 class RuntimeManager(private val context: Context) {
 
     companion object {
         private const val TAG = "NovaClaw/Runtime"
+
+        /** Nombres de los .so empaquetados en jniLibs (ver scripts/fetch-proot-so.sh). */
+        private const val PROOT_LIB = "libproot.so"
+        private const val PROOT_LOADER_LIB = "libproot-loader.so"
+        private const val PROOT_LOADER32_LIB = "libproot-loader32.so"
     }
+
+    enum class ExecMode { DIRECT, PROOT }
 
     data class Result(val exitCode: Int, val output: String)
 
     /** Prefix con el que se compilaron los paquetes .deb de Termux. */
     private val termuxPrefix = "/data/data/com.termux/files/usr"
+
+    /** Directorio donde Android extrae los .so del APK: de solo lectura y ejecutable. */
+    private val nativeLibDir: String
+        get() = context.applicationInfo.nativeLibraryDir
+
+    /** Ruta del binario `proot` extraído en nativeLibraryDir, o null si no está. */
+    private fun findProotBinary(): File? {
+        val f = File(nativeLibDir, PROOT_LIB)
+        return if (f.exists() && f.canExecute()) f else null
+    }
+
+    /**
+     * Elige el modo de ejecución. targetSdk ≤ 28 → DIRECT (comportamiento
+     * histórico intacto). targetSdk ≥ 29 → PROOT si el binario está empaquetado;
+     * si no, DIRECT como último recurso (funcionará en Android ≤ 9 y fallará con
+     * un error claro en 10+, en vez de romper en silencio).
+     */
+    private val execMode: ExecMode by lazy {
+        val legacyExecAllowed = context.applicationInfo.targetSdkVersion <= 28
+        when {
+            legacyExecAllowed -> ExecMode.DIRECT
+            findProotBinary() != null -> ExecMode.PROOT
+            else -> {
+                Log.e(
+                    TAG,
+                    "targetSdk ${context.applicationInfo.targetSdkVersion} exige proot pero " +
+                        "$PROOT_LIB no está en $nativeLibDir. Corré scripts/fetch-proot-so.sh " +
+                        "antes de compilar. Cayendo a DIRECT (fallará en Android 10+)."
+                )
+                ExecMode.DIRECT
+            }
+        }
+    }
+
+    fun execModeName(): String = execMode.name
+
+    /**
+     * Envuelve un argv para que corra bajo el modo activo. En DIRECT lo devuelve
+     * tal cual; en PROOT antepone `proot` con sus binds. El `cwd` es el directorio
+     * de trabajo del guest.
+     */
+    private fun wrapForExec(argv: List<String>, cwd: String): List<String> {
+        if (execMode == ExecMode.DIRECT) return argv
+        val proot = findProotBinary()?.absolutePath
+            ?: return argv // no debería pasar (execMode ya lo verificó), pero por las dudas
+        val prefix = BootstrapInstaller.getPaths(context).prefixDir
+        // proot con root real (/), bindeando el prefix también sobre la ruta
+        // canónica de Termux para que cualquier shebang/ruta hardcodeada resuelva.
+        return buildList {
+            add(proot)
+            add("--kill-on-exit")     // matar el árbol si el proceso raíz muere
+            add("--link2symlink")     // emula hardlinks (apt/dpkg) sobre FS de Android
+            add("-b"); add("/dev")
+            add("-b"); add("/proc")
+            add("-b"); add("/sys")
+            add("-b"); add("$prefix:$termuxPrefix")
+            add("-w"); add(cwd)
+            addAll(argv)
+        }
+    }
 
     fun isNodeInstalled(): Boolean {
         val paths = BootstrapInstaller.getPaths(context)
@@ -262,7 +338,8 @@ class RuntimeManager(private val context: Context) {
         // Nunca dejar la key en texto plano en el/los archivos de config.
         for (f in configCandidates) scrubApiKeyInFile(f)
 
-        val pb = ProcessBuilder(node, "${agentDir.absolutePath}/agent.cjs")
+        val argv = wrapForExec(listOf(node, "${agentDir.absolutePath}/agent.cjs"), paths.homeDir)
+        val pb = ProcessBuilder(argv)
         pb.environment().clear()
         pb.environment().putAll(env)
         pb.directory(File(paths.homeDir))
@@ -350,7 +427,8 @@ class RuntimeManager(private val context: Context) {
         val env = buildEnvironment(paths)
         val shell = "${paths.prefixDir}/bin/sh"
 
-        val pb = ProcessBuilder(shell, "-c", command)
+        val argv = wrapForExec(listOf(shell, "-c", command), paths.homeDir)
+        val pb = ProcessBuilder(argv)
         pb.environment().clear()
         pb.environment().putAll(env)
         pb.directory(File(paths.homeDir))
@@ -404,7 +482,18 @@ class RuntimeManager(private val context: Context) {
             "CONTAINER" to "1",
         )
 
-        findTermuxExecLib(prefix)?.let { env["LD_PRELOAD"] = it }
+        if (execMode == ExecMode.PROOT) {
+            // Bajo proot NO se usa el LD_PRELOAD de termux-exec: proot ya intercepta
+            // execve y hacer ambos a la vez rompe. proot necesita saber dónde está
+            // su loader (también en nativeLibraryDir, ejecutable).
+            File(nativeLibDir, PROOT_LOADER_LIB).takeIf { it.exists() }
+                ?.let { env["PROOT_LOADER"] = it.absolutePath }
+            File(nativeLibDir, PROOT_LOADER32_LIB).takeIf { it.exists() }
+                ?.let { env["PROOT_LOADER_32"] = it.absolutePath }
+        } else {
+            // DIRECT (targetSdk ≤ 28): termux-exec reescribe shebangs en tiempo real.
+            findTermuxExecLib(prefix)?.let { env["LD_PRELOAD"] = it }
+        }
         return env
     }
 
