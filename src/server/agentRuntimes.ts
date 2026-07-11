@@ -8,6 +8,8 @@ import { DEFAULT_CWD, zenConfig } from './config';
 import { runtimeState } from './state';
 import { mcpManager, readMcpConfig, reconnectMcp, writeMcpConfig } from './mcpRegistry';
 import { callZenAgent } from './localFallback';
+import { buildSkillsIndex } from './skills';
+import { runPostToolUseHooks } from './hooks';
 
 // Journal de cambios de archivo para "Deshacer" (los últimos N escritos/editados).
 const changeJournal: FileChange[] = [];
@@ -17,6 +19,9 @@ export const sharedExecutor = createLocalToolExecutor({
     changeJournal.push(c);
     if (changeJournal.length > 200) changeJournal.shift();
   },
+  // B7 hooks PostToolUse: tras editar, corre lo que haya en novaclaw.hooks.json
+  // (formatear/lint) y le devuelve la salida al agente.
+  onAfterMutation: ({ tool, path: filePath, cwd }) => runPostToolUseHooks(tool, filePath, cwd),
   // Deja que el AGENTE instale/quite servidores MCP ("instalá el MCP de X").
   mcp: {
     list: () => ({
@@ -61,12 +66,17 @@ export const nativeAgentRuntime = createNativeAgentRuntime({
   // Memoria persistente del proyecto (como CLAUDE.md): el agente la lee en cada
   // turno y la actualiza él mismo cuando el usuario le enseña algo duradero.
   getProjectContext: () => {
+    let ctx = '';
     try {
       const memoryPath = path.join(DEFAULT_CWD, 'NOVACLAW.md');
-      return fs.existsSync(memoryPath) ? fs.readFileSync(memoryPath, 'utf8') : '';
+      if (fs.existsSync(memoryPath)) ctx = fs.readFileSync(memoryPath, 'utf8');
     } catch {
-      return '';
+      // sin memoria de proyecto
     }
+    // B6: índice de skills on-demand (skills/<nombre>/SKILL.md).
+    const skills = buildSkillsIndex(DEFAULT_CWD);
+    if (skills) ctx = ctx ? `${ctx}\n\n${skills}` : skills;
+    return ctx;
   },
 });
 

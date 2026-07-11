@@ -168,9 +168,14 @@ export type McpControls = {
 };
 
 export function createLocalToolExecutor(
-  opts: { onFileChange?: (change: FileChange) => void; mcp?: McpControls } = {},
+  opts: {
+    onFileChange?: (change: FileChange) => void;
+    mcp?: McpControls;
+    // B7: se llama tras una mutación exitosa; su salida se anexa al resultado.
+    onAfterMutation?: (info: { tool: string; path: string; cwd: string }) => Promise<string | null>;
+  } = {},
 ) {
-  return async function executeToolCall(
+  const executeToolCall = async function (
     call: ToolCallLike,
     context: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
@@ -734,5 +739,31 @@ export function createLocalToolExecutor(
     }
 
     throw new Error(`Unsupported tool: ${call.tool}`);
+  };
+
+  // B7: sin hooks configurados, devolvemos el executor tal cual.
+  if (!opts.onAfterMutation) return executeToolCall;
+
+  // Con hooks: tras una MUTACIÓN exitosa, corremos los PostToolUse y anexamos su
+  // salida al resultado (formateo/lint pasan sin que el modelo tenga que pedirlo).
+  const MUTATION_TOOLS = new Set(['file.write', 'file.edit', 'file.edit_multi']);
+  return async function executeWithHooks(
+    call: ToolCallLike,
+    context: ToolExecutionContext,
+  ): Promise<ToolExecutionResult> {
+    const result = await executeToolCall(call, context);
+    if (result.status === 'success' && MUTATION_TOOLS.has(call.tool)) {
+      try {
+        const note = await opts.onAfterMutation!({
+          tool: call.tool,
+          path: resolveTargetPath(String(call.arguments.path ?? ''), context.cwd),
+          cwd: context.cwd,
+        });
+        if (note) return { ...result, output: `${result.output}\n${note}` };
+      } catch {
+        // un hook roto nunca debe romper la ejecución de la tool
+      }
+    }
+    return result;
   };
 }

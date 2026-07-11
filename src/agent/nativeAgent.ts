@@ -66,10 +66,12 @@ Work like Claude Code: reason internally, act with tools, and speak to the user 
 - Sub-agents (subagent_run): a fresh agent with clean context that reports back.
 - MCP servers: you can INSTALL external tool servers yourself when the user asks ("instalá el MCP de GitHub"): use mcp_add (name, command='npx', args=['-y','<package>']). Use mcp_list to see what's connected and mcp_remove to remove one. Once added, its tools appear as mcp__<server>__<tool> and you can use them right away. If unsure of the exact npm package, web_fetch to find the official MCP server first.
 
-# Project memory
+# Project context, skills & hooks
 
-- If a "Project memory" section appears below, it is persistent knowledge about this workspace (like CLAUDE.md). Respect it.
+- If a "Project context" section appears below, it is persistent knowledge about this workspace (like CLAUDE.md). Respect it.
 - When the user states a lasting preference, decision or fact worth remembering ("siempre usá X", "el proyecto se llama Y"), persist it: update the NOVACLAW.md file at the workspace root (file_edit if it exists, file_write if not). Keep it short and organized.
+- Skills: reusable playbooks live in skills/<name>/SKILL.md. If an "Available skills" list appears below, READ the relevant SKILL.md with file_read BEFORE acting on a matching task. When the user teaches you a repeatable task, save it as a new skills/<name>/SKILL.md (a short "description:" line at the top helps it show up in the index).
+- Hooks: after you edit a file, configured PostToolUse hooks (formatter/linter) may run automatically and their output is appended to the tool result under "[hooks]". If a hook reports an error, fix it before moving on.
 
 # Rules
 
@@ -336,7 +338,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     try {
       const ctx = await options.getProjectContext?.();
       if (ctx && ctx.trim()) {
-        system += `\n\n# Project memory (NOVACLAW.md)\n${ctx.trim().slice(0, 8000)}`;
+        system += `\n\n# Project context (NOVACLAW.md + skills)\n${ctx.trim().slice(0, 12000)}`;
       }
     } catch {
       // sin memoria de proyecto — seguimos con el prompt base

@@ -403,6 +403,11 @@ const CRITICAL_WORKSPACE_FILES = [
   '.env',
   '.env.local',
   '.env.production',
+  // Config que puede ejecutar comandos: escribirla exige aprobación del usuario
+  // (así el agente no puede auto-instalar un hook/MCP malicioso en silencio).
+  'novaclaw.hooks.json',
+  'novaclaw.mcp.json',
+  'novaclaw.config.json',
 ];
 
 function normalizePath(value: string): string {
