@@ -73,6 +73,7 @@ export class LspConnection {
   private pending = new Map<number, Pending>();
   private nextId = 1;
   private closed = false;
+  private closeCbs: Array<() => void> = [];
   /** Última tanda de diagnósticos por uri (textDocument/publishDiagnostics). */
   readonly diagnostics = new Map<string, any[]>();
 
@@ -130,6 +131,23 @@ export class LspConnection {
       p.reject(err);
     }
     this.pending.clear();
+    const cbs = this.closeCbs.splice(0);
+    for (const cb of cbs) {
+      try {
+        cb();
+      } catch {
+        // callback de limpieza no debe romper el cierre
+      }
+    }
+  }
+
+  /** Se llama cuando la conexión muere (exit/error/dispose) — para invalidar cache. */
+  onClose(cb: () => void): void {
+    if (this.closed) {
+      cb();
+      return;
+    }
+    this.closeCbs.push(cb);
   }
 
   request(method: string, params: any, timeoutMs = 15000): Promise<any> {

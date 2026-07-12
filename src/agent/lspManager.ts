@@ -31,7 +31,9 @@ const TS_SERVER: ServerConfig = {
   command: 'typescript-language-server',
   args: ['--stdio'],
   languageId: 'typescript',
-  install: 'npm i -g typescript-language-server typescript',
+  // 4.3.3 es la última que corre en Node 18 (5.x pide Node ≥20). Y typescript@5
+  // (NO el 7.x nativo, que ya no trae lib/tsserver.js — el LSP no lo entiende).
+  install: 'npm i -g typescript-language-server@4.3.3 typescript@5',
 };
 
 const SERVERS: Record<string, ServerConfig> = {
@@ -82,13 +84,35 @@ function resolveServerBin(root: string, command: string): string {
   return existsSync(local) ? local : command;
 }
 
-function initializeParams(root: string) {
+/**
+ * Ubica el tsserver.js CLÁSICO (typescript 5.x) para pasárselo explícito al
+ * language server. typescript-language-server no busca el typescript GLOBAL solo,
+ * y el typescript 7.x nativo ni siquiera trae lib/tsserver.js. Devuelve la ruta
+ * o undefined (y el LSP intenta autodescubrir).
+ */
+function findTsserverPath(root: string, binPath: string): string | undefined {
+  const rel = ['typescript', 'lib', 'tsserver.js'];
+  const candidates = [
+    path.join(root, 'node_modules', ...rel),
+    path.join('/usr/local/lib/node_modules', ...rel),
+    path.join('/usr/lib/node_modules', ...rel),
+  ];
+  // Relativo al binario del LSP (…/node_modules/.bin → …/node_modules/typescript/lib/tsserver.js)
+  if (binPath && binPath !== TS_SERVER.command) {
+    candidates.push(path.resolve(path.dirname(binPath), '..', ...rel));
+  }
+  return candidates.find((c) => existsSync(c));
+}
+
+function initializeParams(root: string, tsserverPath?: string) {
   const uri = pathToFileURL(root).toString();
   return {
     processId: process.pid,
     clientInfo: { name: 'NovaClaw', version: '1.0.0' },
     rootUri: uri,
     workspaceFolders: [{ uri, name: 'workspace' }],
+    // Apuntamos el tsserver clásico si lo encontramos (typescript@5).
+    initializationOptions: tsserverPath ? { tsserver: { path: tsserverPath } } : undefined,
     capabilities: {
       textDocument: {
         synchronization: { didSave: false, dynamicRegistration: false },
@@ -106,14 +130,23 @@ function initializeParams(root: string) {
 
 const connections = new Map<string, Promise<LspConnection | null>>();
 const openedByConn = new Map<LspConnection, Set<string>>();
+// Motivo del último fallo de conexión (para dar un error preciso al agente).
+let lastFail = '';
 
 async function startConnection(root: string, cfg: ServerConfig): Promise<LspConnection | null> {
   const isWin = process.platform === 'win32';
   const bin = resolveServerBin(root, cfg.command);
+  const tsserverPath = findTsserverPath(root, bin);
+  // NODE_PATH con el node_modules global ayuda a que el LSP resuelva typescript.
+  const nodeModulesDir = tsserverPath ? path.resolve(tsserverPath, '..', '..', '..') : '';
+  const env = nodeModulesDir
+    ? { ...process.env, NODE_PATH: [nodeModulesDir, process.env.NODE_PATH].filter(Boolean).join(path.delimiter) }
+    : process.env;
   let child: ChildProcessWithoutNullStreams;
   try {
-    child = spawn(bin, cfg.args, { cwd: root, shell: isWin, env: process.env });
-  } catch {
+    child = spawn(bin, cfg.args, { cwd: root, shell: isWin, env });
+  } catch (error: any) {
+    lastFail = `Could not launch the language server (${error?.message ?? 'spawn error'}). Install it in the phone's Linux: ${cfg.install}`;
     return null;
   }
 
@@ -124,28 +157,49 @@ async function startConnection(root: string, cfg: ServerConfig): Promise<LspConn
     child.once('spawn', () => done(true));
     setTimeout(() => done(true), 1500);
   });
-  if (!spawned) return null;
+  if (!spawned) {
+    lastFail = `Language server not installed. Install it in the phone's Linux: ${cfg.install}`;
+    return null;
+  }
 
   const conn = new LspConnection(child);
   try {
-    await conn.request('initialize', initializeParams(root), 20000);
+    await conn.request('initialize', initializeParams(root, tsserverPath), 30000);
     conn.notify('initialized', {});
     openedByConn.set(conn, new Set());
     return conn;
-  } catch {
+  } catch (error: any) {
     conn.dispose();
+    lastFail = `Language server started but failed to initialize (${error?.message ?? 'error'}). Node here is ${process.version}; if it needs a newer Node try: ${cfg.install}`;
     return null;
   }
 }
 
+function connectionError(cfg: ServerConfig): string {
+  return lastFail || `Language server not available. Install it: ${cfg.install}`;
+}
+
 function getConnection(root: string, cfg: ServerConfig): Promise<LspConnection | null> {
   const key = `${root}::${cfg.key}`;
-  let existing = connections.get(key);
-  if (!existing) {
-    existing = startConnection(root, cfg);
-    connections.set(key, existing);
-  }
-  return existing;
+  const cached = connections.get(key);
+  if (cached) return cached;
+
+  // OJO: NO cacheamos los fallos. Si el server no estaba (aún no instalado) y
+  // luego se instala, la próxima llamada debe reintentar en vez de devolver el
+  // null viejo. Y si una conexión viva muere, se saca del cache para re-spawnear.
+  const promise: Promise<LspConnection | null> = (async () => {
+    const conn = await startConnection(root, cfg);
+    if (!conn) {
+      connections.delete(key);
+      return null;
+    }
+    conn.onClose(() => {
+      if (connections.get(key) === promise) connections.delete(key);
+    });
+    return conn;
+  })();
+  connections.set(key, promise);
+  return promise;
 }
 
 async function ensureOpen(conn: LspConnection, filePath: string, languageId: string): Promise<void> {
@@ -215,10 +269,6 @@ function formatReferences(result: any, name: string): string {
 
 // ── API pública (la usa el executor de tools) ────────────────────────────────
 
-const notInstalled = (cfg: ServerConfig): IntelResult => ({
-  ok: false,
-  text: `Language server not available. Install it in the phone's Linux: ${cfg.install}`,
-});
 const notSupported = (ext: string): IntelResult => ({
   ok: false,
   text: `No language server configured for "${ext || 'this file type'}" (only TS/JS for now).`,
@@ -229,7 +279,7 @@ export async function documentSymbols(filePath: string): Promise<IntelResult> {
   const cfg = SERVERS[path.extname(filePath).toLowerCase()];
   if (!cfg) return notSupported(path.extname(filePath));
   const conn = await getConnection(projectRoot(filePath), cfg);
-  if (!conn) return notInstalled(cfg);
+  if (!conn) return { ok: false, text: connectionError(cfg) };
   await ensureOpen(conn, filePath, cfg.languageId);
   try {
     const res = await conn.request('textDocument/documentSymbol', {
@@ -251,7 +301,7 @@ function serverForScope(scopePath: string): { cfg: ServerConfig; root: string } 
 export async function findSymbol(query: string, scopePath: string): Promise<IntelResult> {
   const { cfg, root } = serverForScope(scopePath);
   const conn = await getConnection(root, cfg);
-  if (!conn) return notInstalled(cfg);
+  if (!conn) return { ok: false, text: connectionError(cfg) };
   try {
     const res = await conn.request('workspace/symbol', { query });
     return { ok: true, text: formatSymbolInformation(res, query) };
@@ -264,7 +314,7 @@ export async function findSymbol(query: string, scopePath: string): Promise<Inte
 export async function referencesFor(query: string, scopePath: string): Promise<IntelResult> {
   const { cfg, root } = serverForScope(scopePath);
   const conn = await getConnection(root, cfg);
-  if (!conn) return notInstalled(cfg);
+  if (!conn) return { ok: false, text: connectionError(cfg) };
   try {
     const symbols = await conn.request('workspace/symbol', { query });
     if (!Array.isArray(symbols) || symbols.length === 0) {
