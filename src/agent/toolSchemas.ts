@@ -146,6 +146,20 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     },
   },
   {
+    name: 'code_intel',
+    description:
+      "Code intelligence via a real LSP language server (TypeScript/JavaScript for now) — understand code WITHOUT blind grepping. Actions: 'symbols' (outline a file: its functions/classes/variables with line numbers — pass path); 'find' (where a symbol is DEFINED across the project, by name — pass query, optional path to scope the project); 'references' (every place a symbol is used, by name — pass query). Prefer this over file_grep to navigate real code: it understands scopes/imports, not just text. It needs the language server installed in the phone's Linux (it tells you the install command if missing).",
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['symbols', 'find', 'references'], description: 'What to do.' },
+        query: { type: 'string', description: 'Symbol name (for find/references).' },
+        path: { type: 'string', description: 'File to outline (symbols) or a file/dir to scope the project (find/references).' },
+      },
+      required: ['action'],
+    },
+  },
+  {
     name: 'phone_location',
     description:
       "Get the phone's current GPS location AND human-readable address (street, city, state, country). Use when the user asks where they are. Needs the Location connector.",
@@ -302,6 +316,7 @@ export const TOOL_NAME_TO_DOT: Record<string, string> = {
   file_search: 'file.search',
   workspace_mkdir: 'workspace.mkdir',
   diagnostics: 'diagnostics.check',
+  code_intel: 'code.intel',
   mcp_list: 'mcp.list',
   mcp_add: 'mcp.add',
   mcp_remove: 'mcp.remove',

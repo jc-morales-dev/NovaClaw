@@ -20,6 +20,7 @@ import { PHONE_TOOLS, executePhoneTool } from './toolsPhone';
 import { SEARCH_TOOLS, executeSearchTool } from './toolsSearch';
 import { performWebSearch, formatSearchResults } from './webSearch';
 import { performDeepResearch, buildResearchDigest } from './deepResearch';
+import { documentSymbols, findSymbol, referencesFor } from './lspManager';
 
 const exec = promisify(execCallback);
 
@@ -377,6 +378,40 @@ export function createLocalToolExecutor(
           output: `Search failed: ${error?.message ?? 'network error'}. Check the connection or try web_fetch on a known URL.`,
           cwd: context.cwd,
         };
+      }
+    }
+
+    if (call.tool === 'code.intel') {
+      const action = String(call.arguments.action ?? '').trim();
+      const query = String(call.arguments.query ?? '').trim();
+      const scope = call.arguments.path
+        ? resolveTargetPath(String(call.arguments.path), context.cwd)
+        : context.cwd;
+      const fail = (output: string): ToolExecutionResult =>
+        ({ name: 'code.intel', command: action || '(no action)', status: 'error', output, cwd: context.cwd });
+      try {
+        let result: { ok: boolean; text: string };
+        if (action === 'symbols') {
+          if (!call.arguments.path) return fail('code_intel "symbols" needs a file path.');
+          result = await documentSymbols(scope);
+        } else if (action === 'find') {
+          if (!query) return fail('code_intel "find" needs a query (symbol name).');
+          result = await findSymbol(query, scope);
+        } else if (action === 'references') {
+          if (!query) return fail('code_intel "references" needs a query (symbol name).');
+          result = await referencesFor(query, scope);
+        } else {
+          return fail('code_intel: action must be "symbols", "find" or "references".');
+        }
+        return {
+          name: 'code.intel',
+          command: `${action} ${query || String(call.arguments.path ?? '')}`.trim(),
+          status: result.ok ? 'success' : 'error',
+          output: result.text,
+          cwd: context.cwd,
+        };
+      } catch (error: any) {
+        return fail(`code_intel failed: ${error?.message ?? 'error'}.`);
       }
     }
 

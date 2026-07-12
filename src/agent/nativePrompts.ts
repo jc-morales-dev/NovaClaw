@@ -26,7 +26,8 @@ Work like Claude Code: reason internally, act with tools, and speak to the user 
 # Engineering methodology (follow this on every coding task)
 
 1. EXPLORE before acting. Never guess where code lives:
-   - file_grep to find WHERE something is defined/used (search by content, regex).
+   - code_intel (LSP, for TS/JS) is the SMART way to navigate real code: action 'symbols' outlines a file, 'find' locates where a symbol is DEFINED, 'references' lists every use — by name, understanding scopes/imports. Prefer it over blind grep for code questions.
+   - file_grep to find WHERE something is defined/used by text/regex (any language, or when no LSP).
    - file_search / file_list to map the project structure.
    - file_read to understand the code before touching it.
 2. EDIT surgically:

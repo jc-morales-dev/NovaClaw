@@ -265,6 +265,13 @@ export function createWebViewToolExecutor() {
  }
  }
 
+ // ── code.intel ───────────────────────────────────────────────────────────
+ // El LSP necesita spawnear un proceso (child_process), que no existe en este
+ // modo WebView; el path real del agente corre en Node (tools.ts) y ahí sí anda.
+ if (call.tool === 'code.intel') {
+ return { name: 'code.intel', command: String(call.arguments.action ?? ''), status: 'error', output: 'code_intel (LSP) no está disponible en este modo; usá file_grep/file_read para navegar el código.', cwd };
+ }
+
  // ── deep.research ────────────────────────────────────────────────────────
  if (call.tool === 'deep.research') {
  const query = String(call.arguments.query ?? '').trim();
