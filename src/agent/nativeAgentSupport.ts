@@ -18,7 +18,7 @@ export function isMcpToolName(name: string): boolean {
 // así que varias seguidas en un turno se pueden ejecutar EN PARALELO.
 export const READ_ONLY_TOOLS = new Set([
   'file_read', 'file_grep', 'file_list', 'file_search',
-  'web_search', 'web_fetch', 'phone_location', 'phone_contacts', 'image_view',
+  'deep_research', 'web_search', 'web_fetch', 'phone_location', 'phone_contacts', 'image_view',
 ]);
 
 // Verificación obligatoria (B3): tras editar un archivo de CÓDIGO, el harness

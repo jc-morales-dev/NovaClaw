@@ -19,6 +19,7 @@ import { resolveTargetPath, isProtectedPath, type ToolExecutionContext } from '.
 import { PHONE_TOOLS, executePhoneTool } from './toolsPhone';
 import { SEARCH_TOOLS, executeSearchTool } from './toolsSearch';
 import { performWebSearch, formatSearchResults } from './webSearch';
+import { performDeepResearch, buildResearchDigest } from './deepResearch';
 
 const exec = promisify(execCallback);
 
@@ -374,6 +375,38 @@ export function createLocalToolExecutor(
           command: query,
           status: 'error',
           output: `Search failed: ${error?.message ?? 'network error'}. Check the connection or try web_fetch on a known URL.`,
+          cwd: context.cwd,
+        };
+      }
+    }
+
+    if (call.tool === 'deep.research') {
+      const query = String(call.arguments.query ?? '').trim();
+      if (!query) {
+        return {
+          name: 'deep.research',
+          command: '',
+          status: 'error',
+          output: 'Provide a research question (query).',
+          cwd: context.cwd,
+        };
+      }
+      const maxSources = Number(call.arguments.max_sources) || 4;
+      try {
+        const { sources } = await performDeepResearch(query, { maxSources });
+        return {
+          name: 'deep.research',
+          command: query,
+          status: 'success',
+          output: buildResearchDigest(query, sources),
+          cwd: context.cwd,
+        };
+      } catch (error: any) {
+        return {
+          name: 'deep.research',
+          command: query,
+          status: 'error',
+          output: `Research failed: ${error?.message ?? 'network error'}. Try web_search + web_fetch manually.`,
           cwd: context.cwd,
         };
       }

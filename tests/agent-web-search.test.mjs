@@ -47,6 +47,14 @@ test('parseDuckDuckGoHtml devuelve [] sin resultados', () => {
   assert.deepEqual(parseDuckDuckGoHtml('<html><body>nada</body></html>', 8), []);
 });
 
+test('parseDuckDuckGoHtml decodifica entidades numéricas del título', () => {
+  const html = `
+    <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fx.com">A &#92; B we&#x27;re &amp; more</a>
+    <a class="result__snippet" href="#">s</a>`;
+  const [r] = parseDuckDuckGoHtml(html, 5);
+  assert.equal(r.title, "A \\ B we're & more");
+});
+
 test('decodeDuckDuckGoHref decodifica el redirect uddg', () => {
   const href = '//duckduckgo.com/l/?uddg=https%3A%2F%2Fnode.org%2Fapi%3Fx%3D1&rut=aaa';
   assert.equal(decodeDuckDuckGoHref(href), 'https://node.org/api?x=1');

@@ -188,6 +188,19 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     },
   },
   {
+    name: 'deep_research',
+    description:
+      'Research a question ACROSS MULTIPLE web sources in one shot: it searches the web, opens the best results, and returns a digest with an excerpt from each source (numbered). Then you synthesize the answer citing the sources [1][2] and cross-checking facts between them (flag disagreements). Use this for any non-trivial question that benefits from several sources — "what is the best X", comparisons, current events, prices, how something works, fact-checking. For a single known URL use web_fetch; for a quick lookup use web_search; for a real answer that must be RIGHT and well-sourced, use deep_research.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The research question or topic.' },
+        max_sources: { type: 'number', description: 'How many sources to read (default 4, max 8).' },
+      },
+      required: ['query'],
+    },
+  },
+  {
     name: 'web_search',
     description:
       'Search the WEB and get a ranked list of results (title, URL, snippet) — no API key needed. This is your way to FIND pages when you don\'t already know the URL: current info, docs, error messages, prices, news, "how to X", any research question. Workflow (like a research pro): web_search to find the best sources, then web_fetch the top 1-3 URLs to read them in full, then synthesize the answer with citations. Use precise keywords; refine and search again if the first results are weak. For anything time-sensitive or that you are not 100% sure of, SEARCH instead of guessing.',
@@ -297,6 +310,7 @@ export const TOOL_NAME_TO_DOT: Record<string, string> = {
   phone_photo: 'phone.photo',
   phone_calendar: 'phone.calendar',
   image_view: 'image.view',
+  deep_research: 'deep.research',
   web_search: 'web.search',
   web_fetch: 'web.fetch',
   subagent_run: 'subagent.run',

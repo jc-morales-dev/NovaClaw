@@ -22,6 +22,7 @@ import {
   truncateFetchBody,
 } from './toolShared';
 import { performWebSearch, formatSearchResults } from './webSearch';
+import { performDeepResearch, buildResearchDigest } from './deepResearch';
 
 const DEFAULT_CWD = '/data/data/com.novaclaw.app/files/workspace';
 
@@ -261,6 +262,21 @@ export function createWebViewToolExecutor() {
  return { name: 'web.search', command: query, status: 'success', output: formatSearchResults(query, results), cwd };
  } catch (err: any) {
  return { name: 'web.search', command: query, status: 'error', output: `Search falló (CORS/red): ${err?.message ?? err}. Probá web_fetch con una URL conocida.`, cwd };
+ }
+ }
+
+ // ── deep.research ────────────────────────────────────────────────────────
+ if (call.tool === 'deep.research') {
+ const query = String(call.arguments.query ?? '').trim();
+ if (!query) {
+ return { name: 'deep.research', command: '', status: 'error', output: 'Provide a research question (query).', cwd };
+ }
+ const maxSources = Number(call.arguments.max_sources) || 4;
+ try {
+ const { sources } = await performDeepResearch(query, { maxSources });
+ return { name: 'deep.research', command: query, status: 'success', output: buildResearchDigest(query, sources), cwd };
+ } catch (err: any) {
+ return { name: 'deep.research', command: query, status: 'error', output: `Research falló (CORS/red): ${err?.message ?? err}. Probá web_search + web_fetch manual.`, cwd };
  }
  }
 

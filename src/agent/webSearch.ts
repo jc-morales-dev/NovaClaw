@@ -11,13 +11,25 @@
 
 export type WebSearchResult = { title: string; url: string; snippet: string };
 
-const ENTITIES: Record<string, string> = {
-  '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"',
-  '&#39;': "'", '&#x27;': "'", '&nbsp;': ' ',
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ',
 };
 
+function fromCodePoint(cp: number): string {
+  if (!Number.isFinite(cp) || cp < 0 || cp > 0x10ffff) return '';
+  try {
+    return String.fromCodePoint(cp);
+  } catch {
+    return '';
+  }
+}
+
+/** Decodifica entidades HTML (nombradas comunes + numéricas &#NN; y &#xHH;). */
 function decodeEntities(s: string): string {
-  return s.replace(/&(?:amp|lt|gt|quot|#39|#x27|nbsp);/g, (m) => ENTITIES[m] ?? m);
+  return s
+    .replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (m, name) => NAMED_ENTITIES[name] ?? m)
+    .replace(/&#(\d+);/g, (_m, dec) => fromCodePoint(parseInt(dec, 10)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_m, hex) => fromCodePoint(parseInt(hex, 16)));
 }
 
 function stripTags(s: string): string {
