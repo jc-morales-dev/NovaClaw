@@ -53,5 +53,22 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nova-diag-'));
   assert.match(r.output, /no encontrado/i);
 }
 
+// ── Lenguajes extra: despacho sin crash y forma correcta del resultado ────────
+// (bash/php/ruby/etc pueden no estar instalados → toleramos ok=true/tool=none;
+//  si el chequeador existe, un archivo con error de sintaxis debe fallar.)
+for (const [name, content] of [
+  ['roto.sh', 'if [ 1 -eq 1 ; then echo hi\n'],   // falta ]
+  ['roto.php', '<?php echo "x" \n'],               // falta ;
+  ['roto.rb', 'def foo\n  puts "x"\n'],            // falta end
+]) {
+  const f = path.join(dir, name);
+  fs.writeFileSync(f, content, 'utf8');
+  const r = await runDiagnostics(f, dir);
+  assert.equal(typeof r.ok, 'boolean', `${name}: ok debe ser boolean`);
+  assert.equal(typeof r.tool, 'string', `${name}: tool debe ser string`);
+  // Si hay chequeador real (tool != none) debe marcar el error; si no, degrada a none.
+  assert.ok(r.tool === 'none' || r.ok === false, `${name}: con chequeador real debe fallar`);
+}
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log('agent-diagnostics.test.mjs passed');

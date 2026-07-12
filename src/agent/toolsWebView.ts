@@ -21,6 +21,7 @@ import {
   isBlockedFetchHost,
   truncateFetchBody,
 } from './toolShared';
+import { performWebSearch, formatSearchResults } from './webSearch';
 
 const DEFAULT_CWD = '/data/data/com.novaclaw.app/files/workspace';
 
@@ -245,6 +246,21 @@ export function createWebViewToolExecutor() {
  };
  } catch (err: any) {
  return { name: 'file.grep', command: `${targetPath} :: ${rawPattern}`, status: 'error', output: err.message, cwd };
+ }
+ }
+
+ // ── web.search ───────────────────────────────────────────────────────────
+ if (call.tool === 'web.search') {
+ const query = String(call.arguments.query ?? '').trim();
+ if (!query) {
+ return { name: 'web.search', command: '', status: 'error', output: 'Provide a search query (query).', cwd };
+ }
+ const maxResults = Number(call.arguments.max_results) || 8;
+ try {
+ const results = await performWebSearch(query, maxResults);
+ return { name: 'web.search', command: query, status: 'success', output: formatSearchResults(query, results), cwd };
+ } catch (err: any) {
+ return { name: 'web.search', command: query, status: 'error', output: `Search falló (CORS/red): ${err?.message ?? err}. Probá web_fetch con una URL conocida.`, cwd };
  }
  }
 

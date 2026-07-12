@@ -149,5 +149,66 @@ export async function runDiagnostics(filePath: string, cwd: string): Promise<Dia
     return OK('none', 'Go no está instalado.');
   }
 
+  // ── Shell (bash) ────────────────────────────────────────────────────────────
+  if (ext === '.sh' || ext === '.bash') {
+    if (await has('shellcheck')) {
+      const r = await runCmd(`shellcheck -f gcc "${filePath}"`, cwd);
+      return r.code === 0 ? OK('shellcheck', 'Sin problemas.') : BAD('shellcheck', r.out.slice(0, 6000));
+    }
+    if (await has('bash')) {
+      const r = await runCmd(`bash -n "${filePath}"`, cwd);
+      return r.code === 0 ? OK('bash -n', 'Sintaxis OK.') : BAD('bash -n', r.out.slice(0, 4000));
+    }
+    return OK('none', 'No hay chequeador de shell (bash/shellcheck).');
+  }
+
+  // ── PHP ─────────────────────────────────────────────────────────────────────
+  if (ext === '.php') {
+    if (await has('php')) {
+      const r = await runCmd(`php -l "${filePath}"`, cwd);
+      return r.code === 0 ? OK('php -l', 'Sin errores de sintaxis.') : BAD('php -l', r.out.slice(0, 6000));
+    }
+    return OK('none', 'PHP no está instalado (pkg install php).');
+  }
+
+  // ── Ruby ──────────────────────────────────────────────────────────────────
+  if (ext === '.rb') {
+    if (await has('ruby')) {
+      const r = await runCmd(`ruby -c "${filePath}"`, cwd);
+      return r.code === 0 ? OK('ruby -c', 'Sintaxis OK.') : BAD('ruby -c', r.out.slice(0, 6000));
+    }
+    return OK('none', 'Ruby no está instalado (pkg install ruby).');
+  }
+
+  // ── C ───────────────────────────────────────────────────────────────────────
+  if (ext === '.c' || ext === '.h') {
+    const cc = (await has('gcc')) ? 'gcc' : (await has('clang') ? 'clang' : (await has('cc') ? 'cc' : null));
+    if (cc) {
+      const r = await runCmd(`${cc} -fsyntax-only "${filePath}"`, cwd);
+      return r.code === 0 ? OK(cc, 'Sintaxis OK.') : BAD(cc, r.out.slice(0, 6000));
+    }
+    return OK('none', 'No hay compilador de C (gcc/clang).');
+  }
+
+  // ── C++ ───────────────────────────────────────────────────────────────────
+  if (['.cc', '.cpp', '.cxx', '.hpp', '.hh'].includes(ext)) {
+    const cxx = (await has('g++')) ? 'g++' : (await has('clang++') ? 'clang++' : null);
+    if (cxx) {
+      const r = await runCmd(`${cxx} -fsyntax-only "${filePath}"`, cwd);
+      return r.code === 0 ? OK(cxx, 'Sintaxis OK.') : BAD(cxx, r.out.slice(0, 6000));
+    }
+    return OK('none', 'No hay compilador de C++ (g++/clang++).');
+  }
+
+  // ── Rust ──────────────────────────────────────────────────────────────────
+  if (ext === '.rs') {
+    const cargoToml = findUp(dir, 'Cargo.toml');
+    if (cargoToml && await has('cargo')) {
+      const r = await runCmd('cargo check --message-format short', path.dirname(cargoToml), 120000);
+      return r.code === 0 ? OK('cargo check', 'Sin problemas.') : BAD('cargo check', r.out.slice(0, 6000));
+    }
+    return OK('none', 'Para chequear Rust hace falta cargo + Cargo.toml (proyecto cargo).');
+  }
+
   return OK('none', `No hay un chequeador de diagnósticos para "${ext || 'este tipo de archivo'}".`);
 }

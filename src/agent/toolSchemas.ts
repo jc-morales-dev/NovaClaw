@@ -138,7 +138,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'diagnostics',
     description:
-      "Check a code file for REAL errors: runs the language's type-checker/linter (tsc for TypeScript types, ruff/pyflakes for Python, eslint/node --check for JS, go vet, JSON parse) and returns the compiler/linter diagnostics. Call it right AFTER editing code to SEE the errors you may have introduced and fix them — this is how you verify code without guessing. If the checker isn't installed it tells you how to install it.",
+      "Check a code file for REAL errors: runs the language's type-checker/linter and returns the compiler diagnostics. Supports TypeScript (tsc types), Python (ruff/pyflakes/py_compile), JS (eslint/node --check), Go (go vet), Rust (cargo check), C/C++ (gcc/clang -fsyntax-only), PHP (php -l), Ruby (ruby -c), shell (shellcheck/bash -n) and JSON. Call it right AFTER editing code to SEE the errors you may have introduced and fix them — this is how you verify code without guessing. If the checker isn't installed it tells you how to install it.",
     parameters: {
       type: 'object',
       properties: { path: { type: 'string', description: 'Path to the code file to check.' } },
@@ -188,9 +188,22 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     },
   },
   {
+    name: 'web_search',
+    description:
+      'Search the WEB and get a ranked list of results (title, URL, snippet) — no API key needed. This is your way to FIND pages when you don\'t already know the URL: current info, docs, error messages, prices, news, "how to X", any research question. Workflow (like a research pro): web_search to find the best sources, then web_fetch the top 1-3 URLs to read them in full, then synthesize the answer with citations. Use precise keywords; refine and search again if the first results are weak. For anything time-sensitive or that you are not 100% sure of, SEARCH instead of guessing.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The search query (precise keywords work best).' },
+        max_results: { type: 'number', description: 'How many results to return (default 8, max 20).' },
+      },
+      required: ['query'],
+    },
+  },
+  {
     name: 'web_fetch',
     description:
-      'Fetch a web page or API over HTTP GET and return its text content (HTML is stripped to readable text, output truncated). Use to read documentation, check an API, or research something online.',
+      'Fetch a web page or API over HTTP GET and return its text content (HTML is stripped to readable text, output truncated). Use to READ a specific URL — docs, an API, or a result you got from web_search. To find URLs in the first place, use web_search.',
     parameters: {
       type: 'object',
       properties: { url: { type: 'string', description: 'The http(s) URL to fetch.' } },
@@ -284,6 +297,7 @@ export const TOOL_NAME_TO_DOT: Record<string, string> = {
   phone_photo: 'phone.photo',
   phone_calendar: 'phone.calendar',
   image_view: 'image.view',
+  web_search: 'web.search',
   web_fetch: 'web.fetch',
   subagent_run: 'subagent.run',
   todo_write: 'todo.write',
