@@ -14,6 +14,7 @@ import { reconnectMcp } from './src/server/mcpRegistry';
 import { loadSessionsFromDisk } from './src/server/sessions';
 import { refreshOpenCodeAvailability } from './src/server/opencode';
 import { attachPtyWebSocket } from './src/server/pty';
+import { ensureLspInstalled } from './src/agent/lspInstall';
 import { registerAdminRoutes } from './src/server/routes/admin';
 import { registerChatRoutes } from './src/server/routes/chat';
 import { registerTerminalRoutes } from './src/server/routes/terminal';
@@ -72,6 +73,10 @@ async function startServer() {
   });
 
   attachPtyWebSocket(server);
+
+  // Deja code_intel listo de fábrica: instala el language server una vez, en
+  // segundo plano (no bloquea el arranque; solo en el teléfono).
+  ensureLspInstalled();
 
   await refreshOpenCodeAvailability();
 }
