@@ -15,9 +15,11 @@ import { loadSessionsFromDisk } from './src/server/sessions';
 import { refreshOpenCodeAvailability } from './src/server/opencode';
 import { attachPtyWebSocket } from './src/server/pty';
 import { ensureLspInstalled } from './src/agent/lspInstall';
+import { ensureDocToolsInstalled } from './src/agent/docTools';
 import { registerAdminRoutes } from './src/server/routes/admin';
 import { registerChatRoutes } from './src/server/routes/chat';
 import { registerTerminalRoutes } from './src/server/routes/terminal';
+import { registerUploadRoute } from './src/server/routes/upload';
 
 // Mismo orden de arranque que siempre: config → MCP → sesiones → logs.
 loadConfigFromFile();
@@ -45,6 +47,7 @@ async function startServer() {
   registerAdminRoutes(app);
   registerChatRoutes(app);
   registerTerminalRoutes(app);
+  registerUploadRoute(app);
 
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
@@ -79,6 +82,8 @@ async function startServer() {
   // Deja code_intel listo de fábrica: instala el language server una vez, en
   // segundo plano (no bloquea el arranque; solo en el teléfono).
   ensureLspInstalled();
+  // Herramientas para analizar archivos subidos (PDF/Office/ZIP), una vez.
+  ensureDocToolsInstalled();
 
   await refreshOpenCodeAvailability();
 }

@@ -349,6 +349,59 @@ export function createLocalToolExecutor(
       };
     }
 
+    if (call.tool === 'file.extract') {
+      const targetPath = resolveTargetPath(String(call.arguments.path ?? ''), context.cwd);
+      const shell = process.env.SHELL || undefined;
+      const MAX = 120 * 1024; // recorte para no reventar el contexto
+      const ok = (output: string): ToolExecutionResult => ({
+        name: 'file.extract', command: path.basename(targetPath), status: 'success',
+        output: output.length > MAX ? `${output.slice(0, MAX)}\n\n…[truncado — el archivo es grande]` : output,
+        cwd: context.cwd,
+      });
+      const err = (output: string): ToolExecutionResult =>
+        ({ name: 'file.extract', command: path.basename(targetPath), status: 'error', output, cwd: context.cwd });
+
+      let st;
+      try { st = await fs.stat(targetPath); } catch { return err(`No existe el archivo: ${targetPath}`); }
+      if (!st.isFile()) return err(`No es un archivo: ${targetPath}`);
+      if (isProtectedPath(targetPath)) return err('Acceso denegado: ese archivo tiene secretos.');
+
+      // 1) markitdown: convierte pdf/docx/xlsx/pptx/zip/html/csv/… a Markdown para IA.
+      for (const bin of ['markitdown', 'python3 -m markitdown']) {
+        try {
+          const { stdout } = await exec(`${bin} "${targetPath}"`, { cwd: context.cwd, timeout: 180000, shell, maxBuffer: 48 * 1024 * 1024 });
+          const out = String(stdout ?? '').trim();
+          if (out) return ok(out);
+        } catch {
+          // binario ausente o falló con este archivo → probamos el siguiente / fallback
+        }
+      }
+
+      // 2) Fallbacks sin markitdown.
+      const ext = path.extname(targetPath).toLowerCase();
+      if (ext === '.pdf') {
+        try {
+          const { stdout } = await exec(`pdftotext "${targetPath}" -`, { cwd: context.cwd, timeout: 120000, shell, maxBuffer: 48 * 1024 * 1024 });
+          const out = String(stdout ?? '').trim();
+          if (out) return ok(out);
+        } catch { /* sin pdftotext */ }
+        return err('No pude leer el PDF. Instalá la herramienta: pip install --break-system-packages "markitdown[pdf]" (o apt-get install -y poppler-utils).');
+      }
+      if (['.zip'].includes(ext)) {
+        try {
+          const { stdout } = await exec(`unzip -l "${targetPath}"`, { cwd: context.cwd, timeout: 60000, shell, maxBuffer: 8 * 1024 * 1024 });
+          const out = String(stdout ?? '').trim();
+          if (out) return ok(`Contenido del ZIP (usá terminal_run \`unzip\` para extraerlo y analizar los archivos):\n\n${out}`);
+        } catch { /* sin unzip */ }
+      }
+      // Texto plano / código → lectura directa.
+      try {
+        const content = await fs.readFile(targetPath, 'utf8');
+        if (content && !content.includes('\0')) return ok(content);
+      } catch { /* binario o ilegible */ }
+      return err(`No pude extraer texto de "${path.basename(targetPath)}". Instalá markitdown: pip install --break-system-packages "markitdown[all]".`);
+    }
+
     if (call.tool === 'web.search') {
       const query = String(call.arguments.query ?? '').trim();
       if (!query) {

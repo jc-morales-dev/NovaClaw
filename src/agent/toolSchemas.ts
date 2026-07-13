@@ -107,6 +107,16 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     },
   },
   {
+    name: 'file_extract',
+    description:
+      "Extract the TEXT/content of a RICH file (PDF, Word .docx, Excel .xlsx, PowerPoint .pptx, .zip, .html, .csv, .epub, etc.) as clean Markdown so you can read and analyze it. Uses markitdown under the hood (high quality, LLM-oriented). Use this on any non-plain-text file the user attaches (they land in ~/uploads or /root/uploads) — e.g. 'resumime este PDF', 'qué dice este Excel'. For plain text/code use file_read; for images use image_view. Handles large files (output is trimmed if huge).",
+    parameters: {
+      type: 'object',
+      properties: { path: { type: 'string', description: 'Path to the file to extract (e.g. /root/uploads/informe.pdf).' } },
+      required: ['path'],
+    },
+  },
+  {
     name: 'file_list',
     description: 'List the entries of a directory.',
     parameters: {
@@ -312,6 +322,7 @@ export const TOOL_NAME_TO_DOT: Record<string, string> = {
   file_edit: 'file.edit',
   file_edit_multi: 'file.edit_multi',
   file_grep: 'file.grep',
+  file_extract: 'file.extract',
   file_list: 'file.list',
   file_search: 'file.search',
   workspace_mkdir: 'workspace.mkdir',

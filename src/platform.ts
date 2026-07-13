@@ -96,6 +96,8 @@ interface PlatformAdapter {
  sendChatStream(message: string, sessionId: string, onEvent: (ev: ChatEvent) => void, signal?: AbortSignal, mode?: 'plan' | 'build' | 'auto', images?: Array<{ mediaType: string; data: string }>): Promise<ChatResponse>;
  approveActionStream(sessionId: string, approved: boolean, onEvent: (ev: ChatEvent) => void, signal?: AbortSignal, scope?: 'once' | 'always'): Promise<ChatResponse>;
  getChatHistory(sessionId: string): Promise<ChatHistoryResponse>;
+ /** Sube CUALQUIER archivo al workspace del agente y devuelve su ruta. */
+ uploadFile?(file: Blob, name: string): Promise<{ path: string; name: string; bytes: number }>;
  resetChat(sessionId: string): Promise<void>;
  /** Rebobina: trunca la conversación en la userIndex-ésima pregunta del usuario. */
  rewindToUserMessage(sessionId: string, userIndex: number): Promise<void>;
@@ -254,6 +256,14 @@ const webAdapter: PlatformAdapter = {
  },
  async getChatHistory(sessionId) {
  const r = await apiFetch(`/api/chat/history?sessionId=${encodeURIComponent(sessionId)}`);
+ return r.json();
+ },
+ async uploadFile(file, name) {
+ // Body binario crudo (no JSON) → el server lo streamea a disco (archivos grandes).
+ const r = await apiFetch(`/api/upload?name=${encodeURIComponent(name)}`, {
+ method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file,
+ });
+ if (!r.ok) throw new Error(`upload ${r.status}`);
  return r.json();
  },
  async resetChat(sessionId) {

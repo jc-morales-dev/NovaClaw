@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Copy,
   FileCode2,
+  FileText,
   FolderTree,
   History,
   Paperclip,
@@ -41,6 +42,13 @@ function sanitizeSvg(svg: string): string {
     .replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, '')
     .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
     .replace(/(xlink:href|href)\s*=\s*("javascript:[^"]*"|'javascript:[^']*')/gi, '');
+}
+
+/** Formatea bytes a un tamaño legible (KB/MB). */
+function formatBytes(n: number): string {
+  if (!n || n < 1024) return `${n || 0} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 /** Renderiza un bloque ```svg como imagen real (gráficas/diagramas de la IA). */
@@ -86,6 +94,8 @@ export interface Message {
   content?: string;
   /** Data URL de una imagen adjunta por el usuario (preview en su burbuja). */
   imageUrl?: string;
+  /** Nombre de un archivo (no-imagen) adjunto por el usuario (chip en su burbuja). */
+  fileName?: string;
   toolExecution?: ToolExecutionMessage;
   approvalRequest?: ApprovalRequestMessage;
   todos?: TodoItem[];
@@ -566,6 +576,7 @@ export default function ChatView() {
 
   const [input, setInput] = useState('');
   const [attachedImage, setAttachedImage] = useState<{ mediaType: string; data: string; url: string; name: string } | null>(null);
+  const [attachedFile, setAttachedFile] = useState<{ name: string; size: number; path: string; uploading: boolean } | null>(null);
   const [mode, setMode] = useState<'plan' | 'build' | 'auto'>('build');
   const [activeSessionId, setActiveSessionId] = useState<string>(
     () => localStorage.getItem(ACTIVE_SESSION_KEY) || DEFAULT_SESSION_ID,
@@ -700,20 +711,9 @@ export default function ChatView() {
     await platform.sendChatStream(userText, sessionId, (ev) => appendServerEvents([ev]), signal, mode, images);
   }
 
-  // Adjuntar una IMAGEN: la leemos, la REDUCIMOS (una foto de celular pesa varios
-  // MB) a máx 1280px + JPEG, y la mandamos como base64 al agente (visión).
-  const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = ''; // permite volver a elegir el mismo archivo
-    if (!file) return;
-    if (!/^image\//.test(file.type)) {
-      window.alert('Por ahora solo se pueden adjuntar imágenes.');
-      return;
-    }
-    if (file.size > 20 * 1024 * 1024) {
-      window.alert('La imagen es muy grande (máximo 20 MB).');
-      return;
-    }
+  // Una IMAGEN se REDUCE (foto de celular = varios MB) a máx 1280px + JPEG y va
+  // como base64 al agente (visión inmediata).
+  const attachImage = (file: File) => {
     const useOriginal = (dataUrl: string) => {
       const data = dataUrl.slice(dataUrl.indexOf(',') + 1);
       setAttachedImage({ mediaType: file.type, data, url: dataUrl, name: file.name });
@@ -740,13 +740,42 @@ export default function ChatView() {
           const out = canvas.toDataURL('image/jpeg', 0.85);
           setAttachedImage({ mediaType: 'image/jpeg', data: out.slice(out.indexOf(',') + 1), url: out, name: file.name });
         } catch {
-          useOriginal(dataUrl); // si el canvas falla, mandamos el original
+          useOriginal(dataUrl);
         }
       };
       img.onerror = () => useOriginal(dataUrl);
       img.src = dataUrl;
     };
     reader.readAsDataURL(file);
+  };
+
+  // Adjuntar CUALQUIER archivo: las imágenes van por visión; el resto (PDF, ZIP,
+  // Word, Excel, etc., de cualquier tamaño) se SUBE al workspace del agente, que
+  // después lo analiza con file_extract/markitdown, file_read o terminal.
+  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // permite volver a elegir el mismo archivo
+    if (!file) return;
+    if (file.size > 200 * 1024 * 1024) {
+      window.alert('El archivo es muy grande (máximo 200 MB).');
+      return;
+    }
+    if (/^image\//.test(file.type)) {
+      attachImage(file);
+      return;
+    }
+    if (!platform.uploadFile) {
+      window.alert('La subida de archivos no está disponible en este modo.');
+      return;
+    }
+    setAttachedFile({ name: file.name, size: file.size, path: '', uploading: true });
+    try {
+      const res = await platform.uploadFile(file, file.name);
+      setAttachedFile({ name: res.name, size: res.bytes, path: res.path, uploading: false });
+    } catch (err: any) {
+      setAttachedFile(null);
+      window.alert('No se pudo subir el archivo: ' + (err?.message ?? err));
+    }
   };
 
   // Deshacer: revierte el último archivo que el agente escribió/editó.
@@ -836,12 +865,22 @@ export default function ChatView() {
   const submitText = async (rawText: string) => {
     const userText = rawText.trim();
     const image = attachedImage;
-    if ((!userText && !image) || isTyping) return;
+    const fileAtt = attachedFile;
+    if ((!userText && !image && !fileAtt) || isTyping) return;
+    if (fileAtt?.uploading) { window.alert('Esperá a que termine de subir el archivo.'); return; }
 
     // Comandos slash (/deshacer, /plan, /build) se ejecutan acá, no van al agente.
     if (userText.startsWith('/')) {
       const handled = await runSlashCommand(userText);
       if (handled) return;
+    }
+
+    // Al agente le pasamos la RUTA del archivo subido para que lo analice; lo que
+    // se MUESTRA en el chat es solo lo que el usuario escribió (+ chip del archivo).
+    let agentText = userText;
+    if (fileAtt?.path) {
+      if (!agentText) agentText = 'Analizá este archivo adjunto.';
+      agentText += `\n\n[Archivo adjunto: ${fileAtt.name} — ${fileAtt.path}]`;
     }
 
     setMessages((prev) => [
@@ -851,19 +890,21 @@ export default function ChatView() {
         role: 'user',
         content: userText,
         imageUrl: image?.url,
+        fileName: fileAtt?.name,
       },
     ]);
     setInput('');
     setAttachedImage(null);
+    setAttachedFile(null);
     setIsTyping(true);
 
     const controller = new AbortController();
     abortRef.current = controller;
     try {
       const images = image ? [{ mediaType: image.mediaType, data: image.data }] : undefined;
-      await sendChatMessage(userText, controller.signal, images);
+      await sendChatMessage(agentText, controller.signal, images);
       // Guardar/renombrar la conversación en el historial (título por tema).
-      await upsertHistoryEntry(userText || 'Imagen');
+      await upsertHistoryEntry(userText || fileAtt?.name || 'Imagen');
     } catch (error: any) {
       if (error?.name !== 'AbortError') {
         setMessages((prev) => [
@@ -1094,6 +1135,12 @@ export default function ChatView() {
                       className="max-w-[70%] max-h-64 rounded-2xl rounded-br-md border border-white/10 object-contain"
                     />
                   )}
+                  {msg.fileName && (
+                    <div className="flex items-center gap-2 rounded-2xl rounded-br-md bg-zinc-800/80 border border-white/10 px-3 py-2">
+                      <FileText size={16} className="text-[#FFB25C] shrink-0" />
+                      <span className="text-[13px] text-zinc-200 truncate max-w-[190px]">{msg.fileName}</span>
+                    </div>
+                  )}
                   {msg.content && (
                     <div className="max-w-[82%] bg-zinc-800/80 text-zinc-100 rounded-2xl rounded-br-md px-4 py-2.5 text-[15px] leading-relaxed whitespace-pre-wrap break-words">
                       {msg.content}
@@ -1248,11 +1295,32 @@ export default function ChatView() {
             </button>
           </div>
         )}
+        {attachedFile && (
+          <div className="mb-2 flex items-center gap-2 w-fit max-w-full rounded-2xl bg-zinc-900/90 border border-white/10 p-2 pr-3">
+            <span className="w-9 h-9 shrink-0 rounded-xl bg-zinc-800 flex items-center justify-center text-[#FFB25C]">
+              <FileText size={17} />
+            </span>
+            <div className="min-w-0">
+              <div className="text-[13px] text-zinc-200 truncate max-w-[190px]">{attachedFile.name}</div>
+              <div className="text-[11px] text-zinc-500">
+                {attachedFile.uploading ? 'Subiendo…' : formatBytes(attachedFile.size)}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAttachedFile(null)}
+              aria-label="Quitar archivo"
+              className="ml-1 w-6 h-6 flex items-center justify-center rounded-full bg-zinc-700/80 text-zinc-200 hover:bg-zinc-600 transition-colors shrink-0"
+            >
+              <X size={13} strokeWidth={2.6} />
+            </button>
+          </div>
+        )}
         <form
           onSubmit={handleSubmit}
           className="flex items-end gap-1.5 bg-zinc-900/90 border border-white/10 rounded-[26px] pl-1.5 pr-1.5 py-1.5 focus-within:border-[#FF7A1A]/40 focus-within:ring-2 focus-within:ring-[#FF7A1A]/15 transition-all shadow-lg shadow-black/40"
         >
-          <input type="file" accept="image/*" ref={fileInputRef} className="hidden" onChange={handleFileSelected} />
+          <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileSelected} />
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -1286,7 +1354,7 @@ export default function ChatView() {
           ) : (
             <button
               type="submit"
-              disabled={!input.trim() && !attachedImage}
+              disabled={!input.trim() && !attachedImage && (!attachedFile || attachedFile.uploading)}
               aria-label="Enviar"
               className="w-9 h-9 flex items-center justify-center rounded-full shrink-0 self-end mb-0.5 transition-all disabled:bg-zinc-800 disabled:text-zinc-600 enabled:bg-gradient-to-br enabled:from-[#FF7A1A] enabled:to-amber-500 enabled:text-white enabled:hover:brightness-110 enabled:active:scale-95"
             >
