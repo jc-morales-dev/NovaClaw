@@ -84,6 +84,8 @@ export interface Message {
   id: number;
   role: 'user' | 'assistant';
   content?: string;
+  /** Data URL de una imagen adjunta por el usuario (preview en su burbuja). */
+  imageUrl?: string;
   toolExecution?: ToolExecutionMessage;
   approvalRequest?: ApprovalRequestMessage;
   todos?: TodoItem[];
@@ -563,6 +565,7 @@ export default function ChatView() {
   const t = translations[appLanguage as keyof typeof translations] || translations.English;
 
   const [input, setInput] = useState('');
+  const [attachedImage, setAttachedImage] = useState<{ mediaType: string; data: string; url: string; name: string } | null>(null);
   const [mode, setMode] = useState<'plan' | 'build' | 'auto'>('build');
   const [activeSessionId, setActiveSessionId] = useState<string>(
     () => localStorage.getItem(ACTIVE_SESSION_KEY) || DEFAULT_SESSION_ID,
@@ -687,11 +690,64 @@ export default function ChatView() {
     });
   }
 
-  async function sendChatMessage(userText: string, signal: AbortSignal) {
+  async function sendChatMessage(
+    userText: string,
+    signal: AbortSignal,
+    images?: Array<{ mediaType: string; data: string }>,
+  ) {
     // Streaming: cada evento (mensaje, tool call, aprobación) aparece EN VIVO.
     // En modo Plan el agente solo analiza y propone; en Build ejecuta.
-    await platform.sendChatStream(userText, sessionId, (ev) => appendServerEvents([ev]), signal, mode);
+    await platform.sendChatStream(userText, sessionId, (ev) => appendServerEvents([ev]), signal, mode, images);
   }
+
+  // Adjuntar una IMAGEN: la leemos, la REDUCIMOS (una foto de celular pesa varios
+  // MB) a máx 1280px + JPEG, y la mandamos como base64 al agente (visión).
+  const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // permite volver a elegir el mismo archivo
+    if (!file) return;
+    if (!/^image\//.test(file.type)) {
+      window.alert('Por ahora solo se pueden adjuntar imágenes.');
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      window.alert('La imagen es muy grande (máximo 20 MB).');
+      return;
+    }
+    const useOriginal = (dataUrl: string) => {
+      const data = dataUrl.slice(dataUrl.indexOf(',') + 1);
+      setAttachedImage({ mediaType: file.type, data, url: dataUrl, name: file.name });
+    };
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 1280;
+        let { width, height } = img;
+        if (width > MAX || height > MAX) {
+          const scale = MAX / Math.max(width, height);
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) throw new Error('no 2d ctx');
+          ctx.drawImage(img, 0, 0, width, height);
+          const out = canvas.toDataURL('image/jpeg', 0.85);
+          setAttachedImage({ mediaType: 'image/jpeg', data: out.slice(out.indexOf(',') + 1), url: out, name: file.name });
+        } catch {
+          useOriginal(dataUrl); // si el canvas falla, mandamos el original
+        }
+      };
+      img.onerror = () => useOriginal(dataUrl);
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  };
 
   // Deshacer: revierte el último archivo que el agente escribió/editó.
   const handleUndo = async () => {
@@ -779,7 +835,8 @@ export default function ChatView() {
 
   const submitText = async (rawText: string) => {
     const userText = rawText.trim();
-    if (!userText || isTyping) return;
+    const image = attachedImage;
+    if ((!userText && !image) || isTyping) return;
 
     // Comandos slash (/deshacer, /plan, /build) se ejecutan acá, no van al agente.
     if (userText.startsWith('/')) {
@@ -793,17 +850,20 @@ export default function ChatView() {
         id: nextMessageId(),
         role: 'user',
         content: userText,
+        imageUrl: image?.url,
       },
     ]);
     setInput('');
+    setAttachedImage(null);
     setIsTyping(true);
 
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      await sendChatMessage(userText, controller.signal);
+      const images = image ? [{ mediaType: image.mediaType, data: image.data }] : undefined;
+      await sendChatMessage(userText, controller.signal, images);
       // Guardar/renombrar la conversación en el historial (título por tema).
-      await upsertHistoryEntry(userText);
+      await upsertHistoryEntry(userText || 'Imagen');
     } catch (error: any) {
       if (error?.name !== 'AbortError') {
         setMessages((prev) => [
@@ -1027,9 +1087,18 @@ export default function ChatView() {
             if (msg.role === 'user') {
               return (
                 <div key={msg.id} className="flex flex-col items-end gap-1">
-                  <div className="max-w-[82%] bg-zinc-800/80 text-zinc-100 rounded-2xl rounded-br-md px-4 py-2.5 text-[15px] leading-relaxed whitespace-pre-wrap break-words">
-                    {msg.content}
-                  </div>
+                  {msg.imageUrl && (
+                    <img
+                      src={msg.imageUrl}
+                      alt="adjunto"
+                      className="max-w-[70%] max-h-64 rounded-2xl rounded-br-md border border-white/10 object-contain"
+                    />
+                  )}
+                  {msg.content && (
+                    <div className="max-w-[82%] bg-zinc-800/80 text-zinc-100 rounded-2xl rounded-br-md px-4 py-2.5 text-[15px] leading-relaxed whitespace-pre-wrap break-words">
+                      {msg.content}
+                    </div>
+                  )}
                   {!isTyping && (
                     <button
                       type="button"
@@ -1165,11 +1234,25 @@ export default function ChatView() {
                 : 'Pide permiso para lo sensible'}
           </span>
         </div>
+        {attachedImage && (
+          <div className="mb-2 flex items-center gap-2 w-fit rounded-2xl bg-zinc-900/90 border border-white/10 p-1.5 pr-3">
+            <img src={attachedImage.url} alt="adjunto" className="w-11 h-11 rounded-xl object-cover" />
+            <span className="text-[12.5px] text-zinc-300 max-w-[160px] truncate">{attachedImage.name}</span>
+            <button
+              type="button"
+              onClick={() => setAttachedImage(null)}
+              aria-label="Quitar imagen"
+              className="ml-1 w-6 h-6 flex items-center justify-center rounded-full bg-zinc-700/80 text-zinc-200 hover:bg-zinc-600 transition-colors"
+            >
+              <X size={13} strokeWidth={2.6} />
+            </button>
+          </div>
+        )}
         <form
           onSubmit={handleSubmit}
           className="flex items-end gap-1.5 bg-zinc-900/90 border border-white/10 rounded-[26px] pl-1.5 pr-1.5 py-1.5 focus-within:border-[#FF7A1A]/40 focus-within:ring-2 focus-within:ring-[#FF7A1A]/15 transition-all shadow-lg shadow-black/40"
         >
-          <input type="file" ref={fileInputRef} className="hidden" onChange={() => {}} />
+          <input type="file" accept="image/*" ref={fileInputRef} className="hidden" onChange={handleFileSelected} />
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -1203,7 +1286,7 @@ export default function ChatView() {
           ) : (
             <button
               type="submit"
-              disabled={!input.trim()}
+              disabled={!input.trim() && !attachedImage}
               aria-label="Enviar"
               className="w-9 h-9 flex items-center justify-center rounded-full shrink-0 self-end mb-0.5 transition-all disabled:bg-zinc-800 disabled:text-zinc-600 enabled:bg-gradient-to-br enabled:from-[#FF7A1A] enabled:to-amber-500 enabled:text-white enabled:hover:brightness-110 enabled:active:scale-95"
             >

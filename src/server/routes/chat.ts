@@ -20,11 +20,15 @@ function openSse(res: Response) {
 
 export function registerChatRoutes(app: Express) {
   app.post('/api/chat', async (req, res) => {
-    const { message, sessionId = AGENT_SESSION_ID, mode } = req.body;
+    const { message, sessionId = AGENT_SESSION_ID, mode, images } = req.body;
+    const imgs = Array.isArray(images)
+      ? images.filter((i: any) => i && typeof i.mediaType === 'string' && typeof i.data === 'string').slice(0, 4)
+      : undefined;
 
-    if (!message?.trim()) {
+    if (!message?.trim() && !imgs?.length) {
       return res.status(400).json({ error: 'Message is required' });
     }
+    const turnText = message?.trim() ? message : 'Analizá la imagen que te adjunté.';
 
     if (runtimeState.agent.status !== 'running') {
       startAgentRuntime();
@@ -35,7 +39,7 @@ export function registerChatRoutes(app: Express) {
     try {
       const session = getOrCreateSession(sessionId);
       const turnMode = mode === 'plan' ? 'plan' : mode === 'auto' ? 'auto' : 'build';
-      const result = await pickRuntime().runUserTurn(session, message, undefined, undefined, turnMode);
+      const result = await pickRuntime().runUserTurn(session, turnText, undefined, undefined, turnMode, imgs);
       runtimeState.terminal.cwd = session.cwd;
       saveSessionsToDisk();
       return res.json({ events: result.events });
@@ -55,10 +59,14 @@ export function registerChatRoutes(app: Express) {
   // ── Streaming en vivo (SSE): los eventos del agente llegan a medida que
   // ocurren (mensajes, tool calls, aprobaciones), como en Claude Code. ──────
   app.post('/api/chat/stream', async (req, res) => {
-    const { message, sessionId = AGENT_SESSION_ID, mode } = req.body;
-    if (!message?.trim()) {
+    const { message, sessionId = AGENT_SESSION_ID, mode, images } = req.body;
+    const imgs = Array.isArray(images)
+      ? images.filter((i: any) => i && typeof i.mediaType === 'string' && typeof i.data === 'string').slice(0, 4)
+      : undefined;
+    if (!message?.trim() && !imgs?.length) {
       return res.status(400).json({ error: 'Message is required' });
     }
+    const turnText = message?.trim() ? message : 'Analizá la imagen que te adjunté.';
     if (runtimeState.agent.status !== 'running') {
       startAgentRuntime();
     }
@@ -72,7 +80,7 @@ export function registerChatRoutes(app: Express) {
     try {
       const session = getOrCreateSession(sessionId);
       const turnMode = mode === 'plan' ? 'plan' : mode === 'auto' ? 'auto' : 'build';
-      const result = await pickRuntime().runUserTurn(session, message, (ev) => send('agent', ev), controller.signal, turnMode);
+      const result = await pickRuntime().runUserTurn(session, turnText, (ev) => send('agent', ev), controller.signal, turnMode, imgs);
       finished = true;
       runtimeState.terminal.cwd = session.cwd;
       saveSessionsToDisk();

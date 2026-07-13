@@ -8,8 +8,12 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import app.novaclaw.databinding.ActivityMainBinding
 import java.util.concurrent.atomic.AtomicBoolean
@@ -32,6 +36,10 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var shizukuStatus = ShizukuManager.Status.NOT_RUNNING
     private val isRunning = AtomicBoolean(false)
 
+    // Selector de archivos del WebView (<input type="file"> → picker del sistema).
+    private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private lateinit var fileChooserLauncher: ActivityResultLauncher<Intent>
+
     private companion object {
         const val AGENT_PORT = 8088
         const val AGENT_BOOT_TIMEOUT_MS = 45_000L
@@ -41,6 +49,17 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        // Resultado del selector de archivos → se lo devolvemos al <input type="file">.
+        fileChooserLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult(),
+        ) { result ->
+            val cb = filePathCallback
+            filePathCallback = null
+            cb?.onReceiveValue(
+                WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data),
+            )
+        }
 
         runtime = RuntimeManager(this)
         distro = DistroManager(this, runtime)
@@ -174,9 +193,11 @@ class MainActivity : AppCompatActivity() {
         val wv = binding.webView
         wv.settings.javaScriptEnabled = true
         wv.settings.domStorageEnabled = true
-        // Hardening: el WebView no necesita leer file:// ni content:// del dispositivo.
+        // Hardening: el WebView no carga file:// del dispositivo. content:// SÍ se
+        // habilita porque el selector de imágenes devuelve URIs content:// que el
+        // input debe poder leer; es seguro acá porque solo se navega a 127.0.0.1.
         wv.settings.allowFileAccess = false
-        wv.settings.allowContentAccess = false
+        wv.settings.allowContentAccess = true
         @Suppress("DEPRECATION")
         run {
             wv.settings.allowFileAccessFromFileURLs = false
@@ -218,6 +239,31 @@ class MainActivity : AppCompatActivity() {
                     binding.setupRoot.visibility = View.GONE
                     wv.visibility = View.VISIBLE
                 }, 1200)
+            }
+        }
+        // Selector de archivos: SIN esto un <input type="file"> del WebView no abre
+        // NADA (ese era el bug: al tocar el clip no pasaba nada). Lanzamos el picker
+        // del sistema y devolvemos el/los archivo(s) elegido(s) al input.
+        wv.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(
+                webView: WebView?,
+                callback: ValueCallback<Array<Uri>>?,
+                params: FileChooserParams?,
+            ): Boolean {
+                filePathCallback?.onReceiveValue(null)
+                filePathCallback = callback
+                val intent = params?.createIntent()
+                if (intent == null) {
+                    filePathCallback = null
+                    return false
+                }
+                return try {
+                    fileChooserLauncher.launch(intent)
+                    true
+                } catch (_: Exception) {
+                    filePathCallback = null
+                    false
+                }
             }
         }
         // INVISIBLE (no GONE) para que el WebView renderice detrás del splash.

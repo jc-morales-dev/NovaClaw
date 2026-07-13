@@ -87,12 +87,13 @@ interface PlatformAdapter {
  installRuntime(): Promise<void>;
  subscribeBootstrap(listener: (status: BootstrapStatus) => void): () => void;
  startAgent(): Promise<void>;
- sendChat(message: string, sessionId: string): Promise<ChatResponse>;
+ sendChat(message: string, sessionId: string, images?: Array<{ mediaType: string; data: string }>): Promise<ChatResponse>;
  approveAction(sessionId: string, approved: boolean): Promise<ChatResponse>;
  /** Como sendChat pero entrega cada evento EN VIVO vía onEvent (streaming).
   * Si el streaming no está disponible, cae a sendChat y emite igual por onEvent.
-  * El `signal` opcional permite DETENER la respuesta en curso (botón Stop). */
- sendChatStream(message: string, sessionId: string, onEvent: (ev: ChatEvent) => void, signal?: AbortSignal, mode?: 'plan' | 'build' | 'auto'): Promise<ChatResponse>;
+  * El `signal` opcional permite DETENER la respuesta en curso (botón Stop).
+  * `images` = imágenes adjuntas (visión). */
+ sendChatStream(message: string, sessionId: string, onEvent: (ev: ChatEvent) => void, signal?: AbortSignal, mode?: 'plan' | 'build' | 'auto', images?: Array<{ mediaType: string; data: string }>): Promise<ChatResponse>;
  approveActionStream(sessionId: string, approved: boolean, onEvent: (ev: ChatEvent) => void, signal?: AbortSignal, scope?: 'once' | 'always'): Promise<ChatResponse>;
  getChatHistory(sessionId: string): Promise<ChatHistoryResponse>;
  resetChat(sessionId: string): Promise<void>;
@@ -215,17 +216,17 @@ const webAdapter: PlatformAdapter = {
  async installRuntime() {},
  subscribeBootstrap(listener) { listener(createBootstrapStatus({ phase: 'ready', message: 'Browser prototype ready.' })); return () => {}; },
  async startAgent() { await apiFetch('/api/agent/start', { method: 'POST' }); },
- async sendChat(message, sessionId) {
- const r = await apiFetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, sessionId }) });
+ async sendChat(message, sessionId, images) {
+ const r = await apiFetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, sessionId, images }) });
  return r.json();
  },
  async approveAction(sessionId, approved) {
  const r = await apiFetch('/api/chat/approval', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, approved }) });
  return r.json();
  },
- async sendChatStream(message, sessionId, onEvent, signal, mode) {
+ async sendChatStream(message, sessionId, onEvent, signal, mode, images) {
  try {
- const r = await apiFetch('/api/chat/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, sessionId, mode }), signal });
+ const r = await apiFetch('/api/chat/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, sessionId, mode, images }), signal });
  if (!r.ok || !r.body) throw new Error(`stream ${r.status}`);
  const events = await consumeSse(r, onEvent);
  return { events };
@@ -233,7 +234,7 @@ const webAdapter: PlatformAdapter = {
  // Cancelación del usuario: no es un error, ya cortamos limpio.
  if (err?.name === 'AbortError' || signal?.aborted) return { events: [] };
  // Fallback sin streaming: emitimos los eventos al final por el mismo camino.
- const data = await webAdapter.sendChat(message, sessionId);
+ const data = await webAdapter.sendChat(message, sessionId, images);
  for (const ev of data.events ?? []) onEvent(ev);
  return data;
  }
@@ -576,12 +577,12 @@ const capacitorAdapter: PlatformAdapter = {
  }
  },
 
- async sendChat(message: string, sessionId: string): Promise<ChatResponse> {
+ async sendChat(message: string, sessionId: string, images?: Array<{ mediaType: string; data: string }>): Promise<ChatResponse> {
  const session = capacitorSessions.get(sessionId) ?? createNewSession(sessionId);
  const apiKey = await resolveApiKey();
  if (!apiKey) return { events: [{ type: 'message', message: NO_KEY_MESSAGE }] };
  const runtime = buildCapacitorRuntime(apiKey);
- const result = await runtime.runUserTurn(session, message);
+ const result = await runtime.runUserTurn(session, message, undefined, undefined, undefined, images);
  capacitorSessions.set(sessionId, session);
  persistSessions(capacitorSessions);
  return { events: result.events.map(runtimeEventToChatEvent) };
@@ -600,7 +601,7 @@ const capacitorAdapter: PlatformAdapter = {
  },
 
  // El runtime vive en el mismo proceso: streaming = pasar el sink directo.
- async sendChatStream(message, sessionId, onEvent, signal, mode) {
+ async sendChatStream(message, sessionId, onEvent, signal, mode, images) {
  const session = capacitorSessions.get(sessionId) ?? createNewSession(sessionId);
  const apiKey = await resolveApiKey();
  if (!apiKey) {
@@ -609,7 +610,7 @@ const capacitorAdapter: PlatformAdapter = {
  return { events: [ev] };
  }
  const runtime = buildCapacitorRuntime(apiKey);
- const result = await runtime.runUserTurn(session, message, (ev) => onEvent(runtimeEventToChatEvent(ev)), signal, mode);
+ const result = await runtime.runUserTurn(session, message, (ev) => onEvent(runtimeEventToChatEvent(ev)), signal, mode, images);
  capacitorSessions.set(sessionId, session);
  persistSessions(capacitorSessions);
  return { events: result.events.map(runtimeEventToChatEvent) };

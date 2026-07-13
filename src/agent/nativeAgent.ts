@@ -8,7 +8,7 @@
  * ./nativeAgentSupport; acá queda solo la orquestación del loop.
  */
 import { classifyToolCall } from './safety';
-import { callModelWithTools, type AgentMessage } from './modelClient';
+import { callModelWithTools, type AgentMessage, type AgentImage } from './modelClient';
 import { TOOL_NAME_TO_DOT, type ToolSchema } from './toolSchemas';
 import { trackedEvents, compactHistoryIfNeeded, type AgentEventSink } from './runtime';
 import type { AgentSession, AgentRuntimeEvent } from './runtime';
@@ -559,6 +559,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     onEvent?: AgentEventSink,
     signal?: AbortSignal,
     mode?: 'plan' | 'build' | 'auto',
+    images?: AgentImage[],
   ): Promise<RuntimeResult> {
     turnMode = mode === 'plan' ? 'plan' : mode === 'auto' ? 'auto' : 'build';
     loopGuard = new Map(); // el anti-loop se cuenta por turno
@@ -569,6 +570,13 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     // el contexto, para que el turno nunca reviente la ventana y no se pierda el hilo.
     await compactWithSummary(session);
     const messages = buildBaseMessages(session);
+    // Imagen adjunta por el usuario: se cuelga del mensaje de usuario del turno
+    // para que el modelo la VEA (no se persiste en el historial, que es texto).
+    if (images?.length) {
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        if (messages[i].role === 'user') { messages[i].images = images; break; }
+      }
+    }
     return runLoop(session, messages, trackedEvents(onEvent), signal);
   }
 

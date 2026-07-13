@@ -29,7 +29,9 @@ async function startServer() {
   const app = express();
   const port = Number(process.env.PORT) || 3000;
 
-  app.use(express.json());
+  // Límite alto: los mensajes pueden traer imágenes en base64 (visión). Sin esto,
+  // Express corta en 100kb y devuelve 413 (HTML) → "Unexpected token '<'" en la UI.
+  app.use(express.json({ limit: '25mb' }));
 
   // Autenticación por token en TODO /api/*. Solo la UI de la app (que recibe el
   // token inyectado en el HTML) puede llamar al agente. Sin token (dev) se saltea.
