@@ -57,6 +57,36 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
   let pendingVerify = false;
   let verifyNudged = false;
 
+  // B11: tokens del turno (loop + subagentes + compactación). Al cerrar el turno
+  // se suma al total de la sesión y se loguea — sirve para VER el ahorro del
+  // prompt caching sin tocar la UI (que ignora session.usage sin problema).
+  let turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+
+  function addUsage(u?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number }): void {
+    if (!u) return;
+    turnUsage.inputTokens += u.inputTokens ?? 0;
+    turnUsage.outputTokens += u.outputTokens ?? 0;
+    turnUsage.cacheReadTokens += u.cacheReadTokens ?? 0;
+    turnUsage.cacheWriteTokens += u.cacheWriteTokens ?? 0;
+  }
+
+  /** Suma lo acumulado al total de la sesión, lo loguea y resetea el contador.
+   *  Idempotente: llamarlo de más nunca duplica ni pierde tokens. */
+  function flushUsage(session: AgentSession): void {
+    const t = turnUsage;
+    if (t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheWriteTokens === 0) return;
+    turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    const s = session.usage ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    s.inputTokens += t.inputTokens;
+    s.outputTokens += t.outputTokens;
+    s.cacheReadTokens += t.cacheReadTokens;
+    s.cacheWriteTokens += t.cacheWriteTokens;
+    session.usage = s;
+    try {
+      console.log(`[usage] turno: in=${t.inputTokens} out=${t.outputTokens} cacheRead=${t.cacheReadTokens} cacheWrite=${t.cacheWriteTokens} | sesión: in=${s.inputTokens} out=${s.outputTokens} cacheRead=${s.cacheReadTokens}`);
+    } catch { /* logging nunca frena el turno */ }
+  }
+
   /** Aviso si esta MISMA llamada ya se repitió demasiado en el turno (loop). */
   function loopWarning(tc: { name: string; args: Record<string, any> }): string | null {
     if (tc.name === 'todo_write') return null; // sus args cambian legítimamente
@@ -120,7 +150,11 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
           'You compress a coding-agent conversation into durable notes the agent will rely on to CONTINUE the task. Preserve, explicitly and structured: (1) the user goal(s); (2) files created/edited with their FULL paths and what changed in each; (3) commands run and their KEY results (errors, test/diagnostics output); (4) decisions and constraints; (5) the current task plan / TODO state; (6) anything still pending or unresolved. Keep exact identifiers (paths, names, flags). Do NOT invent anything not present. No preamble — just the notes.',
         messages: [{ role: 'user', text: `Summarize this conversation so far:\n\n${transcript}` }],
         maxTokens: 2048,
+        // One-off sin herramientas: ofrecerle las tools y cachear este prompt
+        // efímero sería puro costo (escritura de cache que nunca se relee).
+        noTools: true,
       });
+      addUsage(reply.usage);
       const summary = (reply.text ?? '').trim();
       if (!summary) throw new Error('empty summary');
 
@@ -174,6 +208,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
           excludeTools: ['subagent_run', 'todo_write'],
           extraTools: mcpExtraTools(),
         });
+        addUsage(reply.usage);
       } catch (error: any) {
         return `[Sub-agente falló: ${error?.message ?? 'error de modelo'}]`;
       }
@@ -215,7 +250,22 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     return '[El sub-agente alcanzó su límite de pasos sin terminar el reporte.]';
   }
 
+  /** Corre el loop y garantiza que el usage del turno quede contabilizado en la
+   *  sesión ante CUALQUIER salida (respuesta, error, stop, aprobación pendiente). */
   async function runLoop(
+    session: AgentSession,
+    messages: AgentMessage[],
+    events: AgentRuntimeEvent[],
+    signal?: AbortSignal,
+  ): Promise<RuntimeResult> {
+    try {
+      return await runLoopInner(session, messages, events, signal);
+    } finally {
+      flushUsage(session);
+    }
+  }
+
+  async function runLoopInner(
     session: AgentSession,
     messages: AgentMessage[],
     events: AgentRuntimeEvent[],
@@ -259,6 +309,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
           // como messageDelta; la UI lo escribe y el 'message' final lo cierra.
           onTextDelta: (delta) => { events.push({ type: 'messageDelta', delta }); },
         });
+        addUsage(reply.usage);
       } catch (error: any) {
         if (signal?.aborted) {
           session.history.push({ role: 'assistant', content: '⏹️ Respuesta detenida.' });
@@ -627,9 +678,12 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
 
     // Continuar con el resto del lote y luego seguir el loop del modelo.
     const rest = await runToolBatch(session, messages, batch, nextIndex + 1, events, signal);
-    if (rest === 'paused') return { events };
+    // El lote puede haber corrido subagentes (consumen modelo): contabilizarlos
+    // aunque el turno quede pausado/detenido y no pase por runLoop.
+    if (rest === 'paused') { flushUsage(session); return { events }; }
     if (rest === 'aborted') {
       events.push({ type: 'message', message: '⏹️ Respuesta detenida.' });
+      flushUsage(session);
       return { events };
     }
     return runLoop(session, messages, events, signal);

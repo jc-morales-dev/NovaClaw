@@ -40,10 +40,22 @@ export interface AgentMessage {
   rawContent?: any[];
 }
 
+/** Tokens consumidos por UNA llamada al modelo (incluye lecturas/escrituras de
+ *  prompt cache cuando el proveedor las reporta). Sirve para ver el ahorro real. */
+export interface ModelUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  /** Tokens leídos del cache (se cobran ~10% del precio normal). */
+  cacheReadTokens?: number;
+  /** Tokens escritos al cache (se cobran ~125% una vez, se ahorran después). */
+  cacheWriteTokens?: number;
+}
+
 export interface ModelReply {
   text?: string;
   toolCalls?: Array<{ id: string; name: string; args: Record<string, any> }>;
   rawContent?: any[];
+  usage?: ModelUsage;
 }
 
 function authHeaders(providerId: string, apiKey: string): Record<string, string> {
@@ -134,6 +146,36 @@ function supportsAdaptiveThinking(model: string): boolean {
   return /(opus-4-[678]|sonnet-4-6|sonnet-5|fable-5|mythos-5)\b/.test(model.toLowerCase());
 }
 
+// Modelos que ya devolvieron 400 por thinking: en el loop agéntico se llama al
+// modelo decenas de veces por turno — sin esto, CADA iteración paga un 400 +
+// reintento de más (latencia y requests duplicados con modelos sin thinking).
+const thinkingUnsupported = new Set<string>();
+
+// ── Métricas de uso/caching (B11) ────────────────────────────────────────────
+/** usage de la API de Anthropic → ModelUsage (o undefined si no vino). */
+function parseAnthropicUsage(u: any): ModelUsage | undefined {
+  if (!u || typeof u !== 'object') return undefined;
+  return {
+    inputTokens: u.input_tokens ?? undefined,
+    outputTokens: u.output_tokens ?? undefined,
+    cacheReadTokens: u.cache_read_input_tokens ?? undefined,
+    cacheWriteTokens: u.cache_creation_input_tokens ?? undefined,
+  };
+}
+
+/** usage formato OpenAI/OpenRouter → ModelUsage. OpenRouter reporta las lecturas
+ *  de cache en prompt_tokens_details.cached_tokens (y algunas pasarelas suman
+ *  cache_creation_input_tokens para las escrituras). */
+function parseOpenAIUsage(u: any): ModelUsage | undefined {
+  if (!u || typeof u !== 'object') return undefined;
+  return {
+    inputTokens: u.prompt_tokens ?? undefined,
+    outputTokens: u.completion_tokens ?? undefined,
+    cacheReadTokens: u.prompt_tokens_details?.cached_tokens ?? undefined,
+    cacheWriteTokens: u.cache_creation_input_tokens ?? undefined,
+  };
+}
+
 // ── Streaming SSE del camino OpenAI (B10) ────────────────────────────────────
 /**
  * Lee el stream de /chat/completions (formato OpenAI), acumula texto y tool_calls
@@ -152,12 +194,17 @@ async function readOpenAIStream(res: Response, onTextDelta?: (delta: string) => 
       try { args = JSON.parse(tc.function?.arguments || '{}'); } catch { args = {}; }
       return { id: tc.id, name: tc.function?.name, args };
     });
-    return { text: text || undefined, toolCalls: toolCalls.length ? toolCalls : undefined };
+    return {
+      text: text || undefined,
+      toolCalls: toolCalls.length ? toolCalls : undefined,
+      usage: parseOpenAIUsage(data.usage),
+    };
   }
 
   const decoder = new TextDecoder();
   let buffer = '';
   let content = '';
+  let usage: ModelUsage | undefined;
   const toolAcc: Record<number, { id?: string; name?: string; args: string }> = {};
 
   for (;;) {
@@ -173,6 +220,8 @@ async function readOpenAIStream(res: Response, onTextDelta?: (delta: string) => 
       if (!payload || payload === '[DONE]') continue;
       let chunk: any;
       try { chunk = JSON.parse(payload); } catch { continue; }
+      // Con stream_options.include_usage, el chunk final trae usage (choices vacío).
+      if (chunk.usage) usage = parseOpenAIUsage(chunk.usage) ?? usage;
       const delta = chunk.choices?.[0]?.delta;
       if (!delta) continue;
       if (typeof delta.content === 'string' && delta.content) {
@@ -197,7 +246,7 @@ async function readOpenAIStream(res: Response, onTextDelta?: (delta: string) => 
     })
     .filter((t) => t.name);
   const text = content.trim();
-  return { text: text || undefined, toolCalls: toolCalls.length ? toolCalls : undefined };
+  return { text: text || undefined, toolCalls: toolCalls.length ? toolCalls : undefined, usage };
 }
 
 /** Marca el último bloque del último mensaje con cache_control, para cachear el
@@ -207,6 +256,50 @@ function tagLastMessageForCache(messages: any[]): void {
   if (!last || !Array.isArray(last.content) || last.content.length === 0) return;
   const block = last.content[last.content.length - 1];
   if (block && typeof block === 'object') block.cache_control = { type: 'ephemeral' };
+}
+
+// ── Prompt caching de Claude vía OpenRouter (B11) ───────────────────────────
+// OpenRouter cachea solo (server-side) los modelos OpenAI/DeepSeek/Gemini, pero
+// para los Claude exige los MISMOS breakpoints cache_control que la API nativa
+// de Anthropic — si no van, cada vuelta del loop re-paga TODO el contexto a
+// precio lleno. Este es el camino que usa el usuario (OpenRouter + Claude).
+function isClaudeViaOpenRouter(providerId: string, model: string): boolean {
+  return providerId === 'openrouter' && /^anthropic\//i.test(model);
+}
+
+/** Convierte content string → partes multipart para poder colgar cache_control.
+ *  Devuelve la última parte de texto, o null si el mensaje no tiene texto. */
+function lastTextPart(msg: any): any | null {
+  if (typeof msg.content === 'string') {
+    msg.content = [{ type: 'text', text: msg.content }];
+    return msg.content[0];
+  }
+  if (Array.isArray(msg.content)) {
+    for (let i = msg.content.length - 1; i >= 0; i -= 1) {
+      if (msg.content[i]?.type === 'text') return msg.content[i];
+    }
+  }
+  return null;
+}
+
+/** Inserta los breakpoints de cache en mensajes formato OpenAI (para OpenRouter→Claude):
+ *  el último mensaje user/tool (cachea el loop agéntico que crece por el final) y
+ *  el último user (ancla estable entre iteraciones). Máx 2 + system = 3 de los 4
+ *  breakpoints que permite Anthropic. Los assistant no se tocan. */
+function tagOpenAIMessagesForCache(out: any[]): void {
+  let lastTaggable = -1;
+  let lastUser = -1;
+  for (let i = out.length - 1; i >= 0; i -= 1) {
+    const role = out[i]?.role;
+    if (lastTaggable === -1 && (role === 'user' || role === 'tool')) lastTaggable = i;
+    if (lastUser === -1 && role === 'user') lastUser = i;
+    if (lastTaggable !== -1 && lastUser !== -1) break;
+  }
+  for (const idx of new Set([lastTaggable, lastUser])) {
+    if (idx === -1) continue;
+    const part = lastTextPart(out[idx]);
+    if (part) part.cache_control = { type: 'ephemeral' };
+  }
 }
 
 /** Verifica la key llamando al /models real del proveedor y devuelve la lista. */
@@ -269,8 +362,15 @@ export async function verifyAndListModels(
 
 // ── Llamada de chat con herramientas nativas ────────────────────────────────
 
-function toOpenAIMessages(system: string, messages: AgentMessage[]): any[] {
-  const out: any[] = [{ role: 'system', content: system }];
+function toOpenAIMessages(system: string, messages: AgentMessage[], cacheClaude = false): any[] {
+  // B11: para Claude vía OpenRouter el system va como parte multipart con
+  // cache_control → cachea tools+system (el prefijo más gordo y estable).
+  const out: any[] = [{
+    role: 'system',
+    content: cacheClaude
+      ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
+      : system,
+  }];
   for (const m of messages) {
     if (m.role === 'user') {
       if (m.images && m.images.length > 0) {
@@ -299,6 +399,7 @@ function toOpenAIMessages(system: string, messages: AgentMessage[]): any[] {
       out.push({ role: 'tool', tool_call_id: m.toolCallId, content: m.result ?? '' });
     }
   }
+  if (cacheClaude) tagOpenAIMessagesForCache(out);
   return out;
 }
 
@@ -407,11 +508,13 @@ export async function callModelWithTools(input: {
       }, { timeoutMs, abortSignal: input.abortSignal });
     }
 
-    let res = await callAnthropic(true);
+    let res = await callAnthropic(!thinkingUnsupported.has(input.model));
     if (res.status === 400) {
-      // Modelos sin extended thinking (o config no soportada): reintentar sin razonamiento.
+      // Modelos sin extended thinking (o config no soportada): reintentar sin
+      // razonamiento y RECORDARLO para no repetir el 400 en cada iteración.
       const errText = await res.text();
-      if (/thinking/i.test(errText)) {
+      if (/thinking/i.test(errText) && !thinkingUnsupported.has(input.model)) {
+        thinkingUnsupported.add(input.model);
         res = await callAnthropic(false);
       } else {
         throw new Error(`Anthropic 400: ${errText}`);
@@ -428,30 +531,55 @@ export async function callModelWithTools(input: {
       text: text || undefined,
       toolCalls: toolCalls.length ? toolCalls : undefined,
       rawContent: blocks.length ? blocks : undefined,
+      usage: parseAnthropicUsage(data.usage),
     };
   }
 
   // Formato OpenAI-compatible
   const maxTokens = input.maxTokens ?? OPENAI_MAX_TOKENS;
-  const body: Record<string, any> = {
-    model: input.model,
-    messages: toOpenAIMessages(input.system, input.messages),
-    temperature: 0.2,
-    max_tokens: maxTokens,
-  };
-  if (!noTools) {
-    body.tools = toOpenAITools(exclude, extra);
-    body.tool_choice = 'auto';
-  }
   // B10: streamear en vivo cuando el llamador lo pide (respuesta token-por-token).
   const wantsStream = typeof input.onTextDelta === 'function';
-  if (wantsStream) body.stream = true;
-  // OpenAI/OpenRouter/DeepSeek cachean el prefijo solos (server-side), sin parámetro.
-  const res = await fetchWithRetry(`${provider.baseUrl}/chat/completions`, {
+  // B11: OpenAI/DeepSeek/Gemini cachean solos (server-side); los Claude vía
+  // OpenRouter necesitan breakpoints cache_control explícitos, como en la API nativa.
+  const cacheClaude = !noTools && isClaudeViaOpenRouter(input.providerId, input.model);
+
+  function buildOpenAIBody(withCache: boolean): Record<string, any> {
+    const body: Record<string, any> = {
+      model: input.model,
+      messages: toOpenAIMessages(input.system, input.messages, withCache),
+      temperature: 0.2,
+      max_tokens: maxTokens,
+    };
+    if (!noTools) {
+      body.tools = toOpenAITools(exclude, extra);
+      body.tool_choice = 'auto';
+    }
+    if (wantsStream) {
+      body.stream = true;
+      // usage en el último chunk del stream. Solo donde está confirmado que se
+      // soporta (OpenRouter/OpenAI); en pasarelas menores podría dar 400.
+      if (input.providerId === 'openrouter' || input.providerId === 'openai') {
+        body.stream_options = { include_usage: true };
+      }
+    }
+    return body;
+  }
+
+  let res = await fetchWithRetry(`${provider.baseUrl}/chat/completions`, {
     method: 'POST',
     headers,
-    body: JSON.stringify(body),
+    body: JSON.stringify(buildOpenAIBody(cacheClaude)),
   }, { timeoutMs, abortSignal: input.abortSignal });
+  if (res.status === 400 && cacheClaude) {
+    // Red de seguridad: si la pasarela rechazara el payload con cache_control,
+    // degradamos a sin-cache (el estado de siempre) en vez de romper el chat.
+    try { await res.text(); } catch { /* descartar el body del error */ }
+    res = await fetchWithRetry(`${provider.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(buildOpenAIBody(false)),
+    }, { timeoutMs, abortSignal: input.abortSignal });
+  }
   if (!res.ok) throw new Error(`Modelo ${res.status}: ${await res.text()}`);
   if (wantsStream) {
     return readOpenAIStream(res, input.onTextDelta);
@@ -464,5 +592,9 @@ export async function callModelWithTools(input: {
     try { args = JSON.parse(tc.function?.arguments || '{}'); } catch { args = {}; }
     return { id: tc.id, name: tc.function?.name, args };
   });
-  return { text: text || undefined, toolCalls: toolCalls.length ? toolCalls : undefined };
+  return {
+    text: text || undefined,
+    toolCalls: toolCalls.length ? toolCalls : undefined,
+    usage: parseOpenAIUsage(data.usage),
+  };
 }

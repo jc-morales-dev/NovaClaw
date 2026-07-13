@@ -47,6 +47,18 @@ export function attachPtyWebSocket(server: HttpServer) {
       return;
     }
 
+    // Un binario faltante (p.ej. `script`) NO falla en el spawn síncrono: Node lo
+    // emite como evento 'error' asíncrono. Sin este handler, ese evento sin
+    // escuchar TUMBA el server entero del agente — la app queda muerta hasta
+    // reiniciar. Con él, la terminal muestra el error y el resto sigue vivo.
+    child.on('error', (error: any) => {
+      try { ws.send(`\r\n\x1b[31mNo se pudo abrir la terminal: ${error?.message}\x1b[0m\r\n`); } catch {}
+      try { ws.close(); } catch {}
+    });
+    // Escribir en el stdin de un proceso ya muerto también emite 'error' (EPIPE):
+    // lo tragamos — el evento exit/error de arriba ya se encarga de cerrar todo.
+    child.stdin.on('error', () => {});
+
     const sendOut = (buf: Buffer) => {
       if (ws.readyState === ws.OPEN) ws.send(buf.toString('utf8'));
     };

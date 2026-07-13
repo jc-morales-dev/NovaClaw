@@ -26,6 +26,9 @@ export type AgentSession = {
   /** Tools que el usuario aprobó "siempre en este chat": se auto-aprueban el
    *  resto de la sesión. Persiste con la sesión (sobrevive recargas del chat). */
   autoApproveTools?: string[];
+  /** B11: tokens acumulados de la sesión (incluye cache read/write cuando el
+   *  proveedor los reporta). Solo métrica — la UI puede ignorarlo sin problema. */
+  usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number };
 };
 
 type MessageEvent = {
