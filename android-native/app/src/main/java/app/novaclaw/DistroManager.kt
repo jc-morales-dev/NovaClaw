@@ -22,7 +22,7 @@ import java.security.MessageDigest
  * ella (glibc real: bash, node, apt, y cualquier binario que el usuario instale).
  *
  * Validado a mano en un OPPO CPH2557 (Android 15): Ubuntu 24.04.4 (glibc 2.39),
- * Node 18.19, y Claude Code 2.1.207 corriendo dentro del teléfono.
+ * Node 20.18 (tarball oficial sobre el 18 de apt) corriendo dentro del teléfono.
  */
 class DistroManager(
     private val context: Context,
@@ -69,6 +69,14 @@ class DistroManager(
 
     /** La distro está lista cuando el node de adentro existe. */
     fun isInstalled(): Boolean = File(distroRoot, "usr/bin/node").exists()
+
+    /**
+     * Ruta del node a usar dentro de la distro. Preferimos el Node 20 del tarball
+     * oficial (/usr/local/bin/node) y caemos al Node del sistema (/usr/bin/node, 18)
+     * si el 20 no está — así las instalaciones viejas siguen andando.
+     */
+    fun nodePath(): String =
+        if (File(distroRoot, "usr/local/bin/node").exists()) "/usr/local/bin/node" else "/usr/bin/node"
 
     /**
      * Instala la distro completa (idempotente por etapas): baja el rootfs, lo
@@ -167,6 +175,35 @@ class DistroManager(
         if (!isInstalled()) {
             throw IllegalStateException("No se pudo instalar Node dentro del entorno: ${apt.output.takeLast(300)}")
         }
+
+        // ── Node 20 (tarball oficial) ───────────────────────────────────────────
+        // El nodejs de apt es 18; bajamos el 20 con el fetch del Node 18 (su CA va
+        // embebido — curl bajo proot no tiene CA store, y NodeSource rompe con
+        // dpkg). Queda en /usr/local/bin (antes que /usr/bin en el PATH) y el
+        // agente lo prefiere (RuntimeManager usa DistroManager.nodePath()). Si algo
+        // falla, el agente sigue funcionando con el Node 18 del sistema.
+        onProgress("Actualizando a Node 20…")
+        File(distroRoot, "tmp").mkdirs()
+        // Escribimos el downloader desde el host para no pelear con comillas de shell.
+        File(distroRoot, "tmp/dl20.js").writeText(
+            "const fs=require('fs');" +
+                "const url='https://nodejs.org/dist/v20.18.1/node-v20.18.1-linux-arm64.tar.gz';" +
+                "fetch(url).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.arrayBuffer()})" +
+                ".then(b=>{fs.writeFileSync('/tmp/node20.tar.gz',Buffer.from(b));console.log('descargado',b.byteLength)})" +
+                ".catch(e=>{console.log('ERR',e.message);process.exit(1)});",
+        )
+        enter(
+            "timeout 600 node --use-bundled-ca /tmp/dl20.js && " +
+                "tar -xzf /tmp/node20.tar.gz -C /usr/local --strip-components=1 && " +
+                "rm -f /tmp/node20.tar.gz /tmp/dl20.js && /usr/local/bin/node --version",
+            onLine = { onProgress("· $it") },
+        )
+        if (File(distroRoot, "usr/local/bin/node").exists()) {
+            onProgress("Node 20 listo.")
+        } else {
+            Log.w(TAG, "No se pudo instalar Node 20; el agente seguirá con Node 18.")
+        }
+
         onProgress("Entorno Linux completo listo.")
         Log.i(TAG, "Distro glibc instalada en ${distroRoot.absolutePath}")
     }

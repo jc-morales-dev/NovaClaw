@@ -411,7 +411,7 @@ class RuntimeManager(private val context: Context) {
                 paths.homeDir to "/root",
             )
             argv = distro.enterArgv(
-                listOf("/usr/bin/node", "/opt/nova-agent/agent.cjs"),
+                listOf(distro.nodePath(), "/opt/nova-agent/agent.cjs"),
                 cwd = "/root",
                 binds = binds,
                 guestEnv = agentVars,
