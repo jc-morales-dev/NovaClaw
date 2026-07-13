@@ -30,6 +30,34 @@ import { translations } from '../translations';
 import NovaCircle from '../components/NovaCircle';
 import { platform, type PendingApprovalSnapshot, type SessionHistoryEntry } from '../platform';
 
+/**
+ * Saneo básico de un SVG que produjo el modelo antes de inyectarlo: saca
+ * <script>, handlers on*, y hrefs javascript:. Es contenido de la PROPIA IA
+ * (local, un solo usuario), pero igual cortamos vías de ejecución por las dudas.
+ */
+function sanitizeSvg(svg: string): string {
+  return svg
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, '')
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/(xlink:href|href)\s*=\s*("javascript:[^"]*"|'javascript:[^']*')/gi, '');
+}
+
+/** Renderiza un bloque ```svg como imagen real (gráficas/diagramas de la IA). */
+function SvgBlock({ code }: { code: string }) {
+  const svg = code.trim();
+  if (!/^<svg[\s>]/i.test(svg)) {
+    // No parece un SVG válido: lo mostramos como código para no romper nada.
+    return <pre className="overflow-x-auto"><code>{code}</code></pre>;
+  }
+  return (
+    <div
+      className="my-3 max-w-full overflow-x-auto rounded-xl bg-white p-2 [&_svg]:max-w-full [&_svg]:h-auto"
+      dangerouslySetInnerHTML={{ __html: sanitizeSvg(svg) }}
+    />
+  );
+}
+
 type ToolExecutionStatus = 'success' | 'error';
 
 type ToolExecutionMessage = {
@@ -1044,6 +1072,17 @@ export default function ChatView() {
                             <table {...props} />
                           </div>
                         ),
+                        // Un bloque ```svg se renderiza como imagen (gráficas/diagramas).
+                        pre: ({ node, children }: any) => {
+                          const codeEl = node?.children?.[0];
+                          const cls = codeEl?.properties?.className;
+                          const isSvg = Array.isArray(cls) && cls.includes('language-svg');
+                          if (isSvg) {
+                            const raw = codeEl?.children?.[0]?.value ?? '';
+                            return <SvgBlock code={String(raw)} />;
+                          }
+                          return <pre>{children}</pre>;
+                        },
                       }}
                     >
                       {msg.content || ''}
