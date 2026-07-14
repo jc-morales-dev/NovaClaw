@@ -1,11 +1,14 @@
 package app.novaclaw
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
+import android.provider.MediaStore
 import android.provider.Settings
 import android.view.View
 import android.webkit.ValueCallback
@@ -15,7 +18,10 @@ import android.webkit.WebViewClient
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import app.novaclaw.databinding.ActivityMainBinding
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -39,6 +45,9 @@ class MainActivity : AppCompatActivity() {
     // Selector de archivos del WebView (<input type="file"> → picker del sistema).
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private lateinit var fileChooserLauncher: ActivityResultLauncher<Intent>
+    // Cámara directa (input con capture): la foto se escribe en este Uri temporal.
+    private var cameraOutputUri: Uri? = null
+    private lateinit var cameraLauncher: ActivityResultLauncher<Intent>
 
     private companion object {
         const val AGENT_PORT = 8088
@@ -58,6 +67,19 @@ class MainActivity : AppCompatActivity() {
             filePathCallback = null
             cb?.onReceiveValue(
                 WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data),
+            )
+        }
+        // Resultado de la cámara directa: la foto quedó en cameraOutputUri (no en
+        // result.data — ACTION_IMAGE_CAPTURE con EXTRA_OUTPUT devuelve data null).
+        cameraLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult(),
+        ) { result ->
+            val cb = filePathCallback
+            filePathCallback = null
+            val uri = cameraOutputUri
+            cameraOutputUri = null
+            cb?.onReceiveValue(
+                if (result.resultCode == RESULT_OK && uri != null) arrayOf(uri) else null,
             )
         }
 
@@ -252,7 +274,47 @@ class MainActivity : AppCompatActivity() {
             ): Boolean {
                 filePathCallback?.onReceiveValue(null)
                 filePathCallback = callback
-                val intent = params?.createIntent()
+                if (params == null) {
+                    filePathCallback = null
+                    return false
+                }
+                val wantsImage = params.acceptTypes.orEmpty()
+                    .any { it.trim().startsWith("image") }
+
+                // Cámara DIRECTA (input accept="image/*" capture): como el manifest
+                // declara CAMERA (conector), Android exige tenerlo concedido para
+                // lanzar ACTION_IMAGE_CAPTURE; sin permiso caemos al picker normal.
+                if (params.isCaptureEnabled && wantsImage &&
+                    ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.CAMERA)
+                        == PackageManager.PERMISSION_GRANTED
+                ) {
+                    try {
+                        val photo = File.createTempFile("nova-cam-", ".jpg", cacheDir)
+                        val uri = FileProvider.getUriForFile(
+                            this@MainActivity, "$packageName.fileprovider", photo,
+                        )
+                        cameraOutputUri = uri
+                        cameraLauncher.launch(
+                            Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                                .putExtra(MediaStore.EXTRA_OUTPUT, uri),
+                        )
+                        return true
+                    } catch (_: Exception) {
+                        cameraOutputUri = null
+                        // sigue al picker genérico de abajo
+                    }
+                }
+
+                // Galería directa para imágenes (en Android 13+ abre el Photo
+                // Picker, no el menú genérico Cámara/Video/Archivos del sistema);
+                // para el resto, el intent estándar de archivos de siempre.
+                val intent = if (wantsImage) {
+                    Intent(Intent.ACTION_GET_CONTENT)
+                        .setType("image/*")
+                        .addCategory(Intent.CATEGORY_OPENABLE)
+                } else {
+                    params.createIntent()
+                }
                 if (intent == null) {
                     filePathCallback = null
                     return false

@@ -3,14 +3,17 @@ import { useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
   ArrowUp,
+  Camera,
   Check,
   ChevronDown,
   ChevronRight,
   Copy,
   FileCode2,
   FileText,
+  FolderOpen,
   FolderTree,
   History,
+  Image as ImageIcon,
   Paperclip,
   Pencil,
   Plus,
@@ -577,6 +580,8 @@ export default function ChatView() {
   const [input, setInput] = useState('');
   const [attachedImage, setAttachedImage] = useState<{ mediaType: string; data: string; url: string; name: string } | null>(null);
   const [attachedFile, setAttachedFile] = useState<{ name: string; size: number; path: string; uploading: boolean } | null>(null);
+  // Menú del clip: Galería → Cámara → Archivos (en ese orden, pedido del usuario).
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [mode, setMode] = useState<'plan' | 'build' | 'auto'>('build');
   const [activeSessionId, setActiveSessionId] = useState<string>(
     () => localStorage.getItem(ACTIVE_SESSION_KEY) || DEFAULT_SESSION_ID,
@@ -752,6 +757,27 @@ export default function ChatView() {
   // Adjuntar CUALQUIER archivo: las imágenes van por visión; el resto (PDF, ZIP,
   // Word, Excel, etc., de cualquier tamaño) se SUBE al workspace del agente, que
   // después lo analiza con file_extract/markitdown, file_read o terminal.
+  /** Configura el input oculto según lo elegido en el menú del clip y lo dispara.
+   *  Con accept/capture afinados, Android abre DIRECTO la galería o la cámara en
+   *  vez de su menú genérico. handleFileSelected procesa el resultado igual que
+   *  siempre (no cambia nada del flujo de subida). */
+  const pickAttachment = (kind: 'gallery' | 'camera' | 'files') => {
+    setAttachMenuOpen(false);
+    const inputEl = fileInputRef.current;
+    if (!inputEl) return;
+    if (kind === 'gallery') {
+      inputEl.setAttribute('accept', 'image/*');
+      inputEl.removeAttribute('capture');
+    } else if (kind === 'camera') {
+      inputEl.setAttribute('accept', 'image/*');
+      inputEl.setAttribute('capture', 'environment');
+    } else {
+      inputEl.removeAttribute('accept');
+      inputEl.removeAttribute('capture');
+    }
+    inputEl.click();
+  };
+
   const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = ''; // permite volver a elegir el mismo archivo
@@ -1321,13 +1347,44 @@ export default function ChatView() {
           className="flex items-end gap-1.5 bg-zinc-900/90 border border-white/10 rounded-[26px] pl-1.5 pr-1.5 py-1.5 focus-within:border-[#FF7A1A]/40 focus-within:ring-2 focus-within:ring-[#FF7A1A]/15 transition-all shadow-lg shadow-black/40"
         >
           <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileSelected} />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="p-2.5 text-zinc-500 hover:text-zinc-200 transition-colors shrink-0 self-end mb-0.5"
-          >
-            <Paperclip size={19} />
-          </button>
+          <div className="relative shrink-0 self-end mb-0.5">
+            {attachMenuOpen && (
+              <>
+                {/* Tocar fuera cierra el menú (overlay invisible detrás). */}
+                <div className="fixed inset-0 z-40" onClick={() => setAttachMenuOpen(false)} />
+                <div className="absolute bottom-12 left-0 z-50 w-48 rounded-2xl bg-zinc-900 border border-white/10 shadow-xl shadow-black/50 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => pickAttachment('gallery')}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-sm text-zinc-200 hover:bg-white/5 active:bg-white/10 transition-colors"
+                  >
+                    <ImageIcon size={18} className="text-[#FF7A1A]" /> Galería
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => pickAttachment('camera')}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-sm text-zinc-200 hover:bg-white/5 active:bg-white/10 transition-colors border-t border-white/5"
+                  >
+                    <Camera size={18} className="text-[#FF7A1A]" /> Cámara
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => pickAttachment('files')}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-sm text-zinc-200 hover:bg-white/5 active:bg-white/10 transition-colors border-t border-white/5"
+                  >
+                    <FolderOpen size={18} className="text-[#FF7A1A]" /> Archivos
+                  </button>
+                </div>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => setAttachMenuOpen((v) => !v)}
+              className="p-2.5 text-zinc-500 hover:text-zinc-200 transition-colors"
+            >
+              <Paperclip size={19} />
+            </button>
+          </div>
           <textarea
             value={input}
             onChange={(e) => {

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Rutas que el FileProvider puede compartir: solo el cache interno, donde la
+     cámara escribe la foto temporal del adjunto (nova-cam-*.jpg). -->
+<paths>
+    <cache-path name="camera" path="." />
+</paths>
