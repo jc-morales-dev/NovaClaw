@@ -7,6 +7,14 @@ import { PROVIDERS, getProvider } from '../../agent/providers';
 import { verifyAndListModels } from '../../agent/modelClient';
 import { catalogForClient, deviceSpecFor, findCatalogEntry } from '../../agent/mcpCatalog';
 import { startDeviceFlow, pollDeviceToken, type DeviceAuthSpec } from '../../agent/oauthDevice';
+import {
+  startCodexDeviceFlow,
+  pollCodexDeviceFlow,
+  clearCodexTokens,
+  hasCodexAuth,
+  codexPlanType,
+  type CodexDeviceStart,
+} from '../../agent/openaiCodexAuth';
 import { saveConfigToFile, syncBaseUrlToProvider, zenConfig } from '../config';
 import { getRuntimeSnapshot, runtimeState, startAgentRuntime, systemLogs } from '../state';
 import { MCP_CONFIG_PATH, mcpManager, readMcpConfig, reconnectMcp, saveMcpSecretDev, writeMcpConfig } from '../mcpRegistry';
@@ -154,6 +162,67 @@ export function registerAdminRoutes(app: Express) {
     } catch (error: any) {
       res.json({ status: 'error', error: error?.message ?? 'error de polling' });
     }
+  });
+
+  // ── Login con ChatGPT (OpenAI Codex, sin API key) ─────────────────────────
+  // Mismo patrón que el flujo del código de los MCP: start → la UI muestra el
+  // código y el link → poll hasta que el usuario autoriza en openai.com.
+  const codexFlows = new Map<string, { flow: CodexDeviceStart; expiresAt: number }>();
+
+  app.get('/api/provider/oauth/status', (_req, res) => {
+    res.json({ authorized: hasCodexAuth(), plan: codexPlanType() ?? null });
+  });
+
+  app.post('/api/provider/oauth/start', async (_req, res) => {
+    try {
+      const flow = await startCodexDeviceFlow();
+      const flowId = crypto.randomUUID();
+      const now = Date.now();
+      for (const [k, v] of codexFlows) if (v.expiresAt < now) codexFlows.delete(k);
+      codexFlows.set(flowId, { flow, expiresAt: now + 15 * 60 * 1000 });
+      res.json({
+        flowId,
+        userCode: flow.userCode,
+        verificationUri: flow.verificationUri,
+        interval: flow.interval,
+      });
+    } catch (error: any) {
+      res.status(502).json({ error: error?.message ?? 'No se pudo iniciar el login con ChatGPT.' });
+    }
+  });
+
+  app.post('/api/provider/oauth/poll', async (req, res) => {
+    const flowId = String(req.body?.flowId ?? '').trim();
+    const entry = codexFlows.get(flowId);
+    if (!entry) return res.status(404).json({ status: 'error', error: 'flujo desconocido o vencido' });
+    if (entry.expiresAt < Date.now()) {
+      codexFlows.delete(flowId);
+      return res.json({ status: 'error', error: 'el código venció (15 min) — empezá de nuevo' });
+    }
+    try {
+      const result = await pollCodexDeviceFlow(entry.flow);
+      if (result.status === 'authorized') {
+        codexFlows.delete(flowId);
+        // Activar el proveedor: el marcador 'oauth' enciende el modo remoto
+        // en toda la lógica existente que chequea apiKey.
+        zenConfig.provider = 'openai-codex';
+        zenConfig.apiKey = 'oauth';
+        syncBaseUrlToProvider();
+        saveConfigToFile();
+      }
+      res.json({ ...result, plan: result.status === 'authorized' ? codexPlanType() ?? null : undefined });
+    } catch (error: any) {
+      res.json({ status: 'error', error: error?.message ?? 'error de polling' });
+    }
+  });
+
+  app.post('/api/provider/oauth/logout', (_req, res) => {
+    clearCodexTokens();
+    if (zenConfig.provider === 'openai-codex') {
+      zenConfig.apiKey = '';
+      saveConfigToFile();
+    }
+    res.json({ ok: true });
   });
 
   // Desconectar/quitar un MCP.

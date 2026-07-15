@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { getProvider } from '../agent/providers';
+import { hasCodexAuth } from '../agent/openaiCodexAuth';
 
 // Configuración del proveedor de IA. Mutable en runtime para que la pantalla de
 // Ajustes pueda cambiar baseUrl/apiKey/model SIN reiniciar el agente ni recompilar.
@@ -50,6 +51,11 @@ export function loadConfigFromFile() {
     syncBaseUrlToProvider();
   } catch (error: any) {
     console.error('No se pudo leer novaclaw.config.json:', error?.message);
+  }
+  // OpenAI Codex no usa API key: si hay sesión OAuth guardada, el marcador
+  // 'oauth' activa el modo remoto (toda la lógica existente chequea apiKey).
+  if (zenConfig.provider === 'openai-codex' && !zenConfig.apiKey && hasCodexAuth()) {
+    zenConfig.apiKey = 'oauth';
   }
 }
 

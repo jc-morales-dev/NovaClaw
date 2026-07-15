@@ -64,6 +64,12 @@ export default function Settings() {
   const [providerSaved, setProviderSaved] = useState(false);
   // Proveedores que ya tienen una API key guardada (una key por proveedor).
   const [keyProviders, setKeyProviders] = useState<string[]>([]);
+  // Login con ChatGPT (OpenAI Codex): sesión OAuth, sin API key.
+  const [codexAuthed, setCodexAuthed] = useState(false);
+  const [codexPlan, setCodexPlan] = useState<string | null>(null);
+  const [codexFlow, setCodexFlow] = useState<{ flowId: string; userCode: string; verificationUri: string; interval: number } | null>(null);
+  const [codexStarting, setCodexStarting] = useState(false);
+  const [codexCopied, setCodexCopied] = useState(false);
 
   // Conectores del teléfono (permisos reales de Android).
   const [connectors, setConnectors] = useState<ConnectorState>(() => getConnectors());
@@ -266,6 +272,7 @@ export default function Settings() {
       setMcpServers(s.servers ?? []);
     }).catch(() => {});
     platform.getApiKeyProviders().then(setKeyProviders).catch(() => {});
+    platform.getProviderOAuthStatus().then((s) => { setCodexAuthed(!!s.authorized); setCodexPlan(s.plan ?? null); }).catch(() => {});
   }, []);
 
   const currentProviderDef = providers.find((p) => p.id === selectedProvider);
@@ -291,6 +298,50 @@ export default function Settings() {
       setModels([]);
       refreshKeyProviders();
     } catch { /* ignore */ }
+  }
+
+  // Poll del login con ChatGPT: mientras haya flujo activo pregunta cada
+  // `interval` seg si el usuario ya puso el código y autorizó en openai.com.
+  useEffect(() => {
+    if (!codexFlow) return;
+    let cancelled = false;
+    const tick = async () => {
+      let r: { status: string; error?: string; plan?: string | null };
+      try { r = await platform.pollProviderOAuth(codexFlow.flowId); } catch { return; }
+      if (cancelled) return;
+      if (r.status === 'authorized') {
+        setCodexFlow(null);
+        setCodexAuthed(true);
+        setCodexPlan(r.plan ?? null);
+        handleVerify(); // listar los modelos de una, sin pasos extra
+      } else if (r.status === 'error') {
+        setCodexFlow(null);
+        setVerifyError(r.error ?? (isSpanish ? 'Error en el login.' : 'Login error.'));
+      }
+    };
+    const id = setInterval(tick, Math.max(2, codexFlow.interval) * 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [codexFlow]);
+
+  async function handleCodexLogin() {
+    setVerifyError('');
+    setCodexStarting(true);
+    try {
+      const f = await platform.startProviderOAuth();
+      setCodexFlow(f);
+    } catch (e: any) {
+      setVerifyError(e?.message ?? (isSpanish ? 'No se pudo iniciar el login.' : 'Could not start login.'));
+    } finally {
+      setCodexStarting(false);
+    }
+  }
+
+  async function handleCodexLogout() {
+    try { await platform.logoutProviderOAuth(); } catch { /* ignore */ }
+    setCodexAuthed(false);
+    setCodexPlan(null);
+    setCodexFlow(null);
+    setModels([]);
   }
 
   async function handleVerify() {
@@ -599,27 +650,24 @@ export default function Settings() {
                       </label>
                       <div className="grid grid-cols-2 gap-2">
                         {providers.map((p) => {
-                          const disabled = p.note === 'login-oauth';
                           const active = p.id === selectedProvider;
+                          const hasAccess = keyProviders.includes(p.id) || (p.note === 'login-oauth' && codexAuthed);
                           return (
                             <button
                               key={p.id}
                               type="button"
-                              disabled={disabled}
                               onClick={() => { setSelectedProvider(p.id); setModels([]); setVerifyError(''); setApiKeyInput(''); setApiKeyVisible(false); }}
                               className={`px-3 py-2.5 rounded-xl text-[13px] font-semibold text-left border transition-colors ${
                                 active
                                   ? 'bg-[#FF7A1A]/12 border-[#FF7A1A] text-orange-100'
-                                  : disabled
-                                    ? 'bg-zinc-950 border-zinc-900 text-zinc-600 cursor-not-allowed'
-                                    : 'bg-zinc-950 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
+                                  : 'bg-zinc-950 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
                               }`}
                             >
                               <span className="flex items-center gap-1.5">
-                                {keyProviders.includes(p.id) && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" title="Con key guardada" />}
+                                {hasAccess && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" title={p.note === 'login-oauth' ? 'Sesión activa' : 'Con key guardada'} />}
                                 {p.label}
                               </span>
-                              {disabled && <span className="block text-[10px] text-zinc-600 mt-0.5">{isSpanish ? 'Próximamente' : 'Coming soon'}</span>}
+                              {p.note === 'login-oauth' && <span className="block text-[10px] text-zinc-500 mt-0.5">{isSpanish ? 'Sin API key · login' : 'No API key · login'}</span>}
                             </button>
                           );
                         })}
@@ -629,7 +677,86 @@ export default function Settings() {
                       )}
                     </div>
 
+                    {/* Paso 2 (login OAuth): iniciar sesión con ChatGPT, sin key */}
+                    {currentProviderDef?.note === 'login-oauth' && (
+                      <div className="space-y-1.5">
+                        <label className="text-zinc-400 text-xs font-semibold px-1">
+                          {isSpanish ? '2 · Cuenta de ChatGPT' : '2 · ChatGPT account'}
+                        </label>
+                        {codexAuthed ? (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between gap-2 bg-emerald-500/[0.08] border border-emerald-500/30 rounded-xl px-3.5 py-3">
+                              <span className="flex items-center gap-2 text-emerald-300 text-[13px] font-semibold min-w-0">
+                                <CheckCircle2 size={16} className="shrink-0" />
+                                <span className="truncate">
+                                  {isSpanish ? 'Sesión activa' : 'Signed in'}
+                                  {codexPlan ? ` · ${codexPlan}` : ''}
+                                </span>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={handleCodexLogout}
+                                className="shrink-0 text-red-400/80 hover:text-red-400 text-[11px] font-semibold"
+                              >
+                                {isSpanish ? 'Cerrar sesión' : 'Sign out'}
+                              </button>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={verifying}
+                              onClick={handleVerify}
+                              className="w-full bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-100 font-semibold py-3 rounded-xl transition-colors"
+                            >
+                              {verifying ? (isSpanish ? 'Cargando…' : 'Loading…') : (isSpanish ? 'Ver modelos disponibles' : 'List available models')}
+                            </button>
+                          </div>
+                        ) : codexFlow ? (
+                          <div className="rounded-2xl border border-[#FF7A1A]/40 bg-[#FF7A1A]/[0.06] p-4 space-y-3">
+                            <p className="text-[13px] text-zinc-200 leading-relaxed">
+                              {isSpanish ? 'Abrí esta página y poné el código:' : 'Open this page and enter the code:'}
+                            </p>
+                            <div className="flex items-center justify-between gap-2 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5">
+                              <span className="text-[22px] font-mono font-bold tracking-widest text-[#FFB25C]">{codexFlow.userCode}</span>
+                              <button
+                                type="button"
+                                onClick={() => { try { navigator.clipboard.writeText(codexFlow.userCode); setCodexCopied(true); setTimeout(() => setCodexCopied(false), 1500); } catch { /* */ } }}
+                                className="shrink-0 flex items-center gap-1 text-[12px] text-zinc-300 hover:text-white px-2 py-1 rounded-lg hover:bg-zinc-800 transition"
+                              >
+                                <Copy size={13} /> {codexCopied ? (isSpanish ? 'Copiado' : 'Copied') : (isSpanish ? 'Copiar' : 'Copy')}
+                              </button>
+                            </div>
+                            <a
+                              href={codexFlow.verificationUri}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="w-full flex items-center justify-center gap-1.5 bg-[#FF7A1A] text-[#1A0E02] font-semibold py-2.5 rounded-xl hover:brightness-110 transition text-[13px]"
+                            >
+                              <ExternalLink size={14} /> {isSpanish ? 'Abrir openai.com y autorizar' : 'Open openai.com and authorize'}
+                            </a>
+                            <p className="text-[11px] text-zinc-400 flex items-center gap-1.5">
+                              <span className="w-2 h-2 rounded-full bg-[#FF7A1A] animate-pulse" />
+                              {isSpanish ? 'Esperando que inicies sesión y autorices…' : 'Waiting for you to sign in and authorize…'}
+                            </p>
+                            <button type="button" onClick={() => setCodexFlow(null)} className="text-[11px] text-zinc-500 hover:text-zinc-300">
+                              {isSpanish ? 'Cancelar' : 'Cancel'}
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={codexStarting}
+                            onClick={handleCodexLogin}
+                            className="w-full bg-[#E8660D] hover:bg-[#FF7A1A] disabled:opacity-50 text-white font-semibold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
+                          >
+                            <KeyRound size={16} />
+                            {codexStarting ? (isSpanish ? 'Iniciando…' : 'Starting…') : (isSpanish ? 'Iniciar sesión con ChatGPT' : 'Sign in with ChatGPT')}
+                          </button>
+                        )}
+                      </div>
+                    )}
+
                     {/* Paso 2: API key + verificar */}
+                    {currentProviderDef?.note !== 'login-oauth' && (
                     <div className="space-y-1.5">
                       <label className="text-zinc-400 text-xs font-semibold px-1 flex items-center justify-between">
                         <span>
@@ -669,6 +796,7 @@ export default function Settings() {
                         {verifying ? (isSpanish ? 'Verificando…' : 'Verifying…') : (isSpanish ? 'Verificar y ver modelos' : 'Verify & list models')}
                       </button>
                     </div>
+                    )}
 
                     {verifyError && (
                       <div className="flex items-center gap-2 text-amber-400 text-sm">

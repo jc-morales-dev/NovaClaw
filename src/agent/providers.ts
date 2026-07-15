@@ -5,7 +5,7 @@
  * nunca mostramos modelos inventados ni catálogos que quedan viejos.
  */
 
-export type ApiFormat = 'openai' | 'anthropic';
+export type ApiFormat = 'openai' | 'anthropic' | 'openai-responses';
 
 export interface ProviderDef {
   id: string;
@@ -73,13 +73,25 @@ export const PROVIDERS: ProviderDef[] = [
   {
     id: 'openai-codex',
     label: 'OpenAI Codex (cuenta ChatGPT)',
-    baseUrl: 'https://api.openai.com/v1',
-    apiFormat: 'openai',
+    // Backend de Codex para cuentas ChatGPT: habla la Responses API, no
+    // chat/completions, y autentica con los tokens OAuth (no hay API key).
+    baseUrl: 'https://chatgpt.com/backend-api/codex',
+    apiFormat: 'openai-responses',
     modelsPath: '/models',
     needsKey: false,
-    keyHint: 'Iniciar sesión con tu cuenta de ChatGPT/Codex (OAuth). Próximamente.',
+    keyHint: 'Sin API key: iniciás sesión con tu cuenta de ChatGPT (sirve la gratis) y usás los modelos GPT de Codex. El uso descuenta de los límites de tu plan.',
     note: 'login-oauth',
   },
+];
+
+/** Modelos de Codex conocidos, por si el /models del backend no responde.
+ *  gpt-5.6-sol NO está: OpenAI lo bloquea para cuentas ChatGPT (solo API paga). */
+export const CODEX_FALLBACK_MODELS = [
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-5.4-codex',
+  'gpt-5.4',
+  'gpt-5.4-mini',
 ];
 
 export function getProvider(id: string): ProviderDef | undefined {

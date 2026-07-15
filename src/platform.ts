@@ -134,6 +134,14 @@ interface PlatformAdapter {
  startMcpDevice(catalogId: string): Promise<McpDeviceStart>;
  /** Poll del flujo del código; devuelve el token cuando el usuario autoriza. */
  pollMcpDevice(flowId: string): Promise<McpDevicePoll>;
+ /** Login con ChatGPT (OpenAI Codex, sin API key): estado de la sesión. */
+ getProviderOAuthStatus(): Promise<{ authorized: boolean; plan?: string | null }>;
+ /** Arranca el login con ChatGPT: devuelve el código corto + la URL de OpenAI. */
+ startProviderOAuth(): Promise<{ flowId: string; userCode: string; verificationUri: string; interval: number }>;
+ /** Poll del login con ChatGPT (la UI llama en loop hasta authorized/error). */
+ pollProviderOAuth(flowId: string): Promise<{ status: 'pending' | 'authorized' | 'error'; error?: string; plan?: string | null }>;
+ /** Cierra la sesión de ChatGPT (borra los tokens). */
+ logoutProviderOAuth(): Promise<{ ok: boolean }>;
  /** Deshace el último archivo escrito/editado por el agente. */
  undo(): Promise<{ ok: boolean; path?: string; message?: string }>;
 }
@@ -349,6 +357,23 @@ const webAdapter: PlatformAdapter = {
  },
  async pollMcpDevice(flowId) {
  const r = await apiFetch('/api/mcp/device/poll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ flowId }) });
+ return r.json();
+ },
+ async getProviderOAuthStatus() {
+ const r = await apiFetch('/api/provider/oauth/status');
+ return r.json();
+ },
+ async startProviderOAuth() {
+ const r = await apiFetch('/api/provider/oauth/start', { method: 'POST' });
+ if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error ?? 'No se pudo iniciar el login con ChatGPT.'); }
+ return r.json();
+ },
+ async pollProviderOAuth(flowId) {
+ const r = await apiFetch('/api/provider/oauth/poll', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ flowId }) });
+ return r.json();
+ },
+ async logoutProviderOAuth() {
+ const r = await apiFetch('/api/provider/oauth/logout', { method: 'POST' });
  return r.json();
  },
  async undo() { const r = await apiFetch('/api/undo', { method: 'POST' }); return r.json(); },
@@ -758,6 +783,13 @@ const capacitorAdapter: PlatformAdapter = {
  async disconnectMcp() { return { ok: false }; },
  async startMcpDevice() { return { flowId: '', userCode: '', verificationUri: '', verificationUriComplete: null, interval: 5, expiresIn: 900, error: 'no disponible' }; },
  async pollMcpDevice() { return { status: 'error', error: 'no disponible' }; },
+ // El login con ChatGPT vive en el agente (server); este modo legacy no lo tiene.
+ async getProviderOAuthStatus() { return { authorized: false, plan: null }; },
+ async startProviderOAuth(): Promise<{ flowId: string; userCode: string; verificationUri: string; interval: number }> {
+ throw new Error('El login con ChatGPT necesita el agente corriendo (abrí la app con el runtime instalado).');
+ },
+ async pollProviderOAuth() { return { status: 'error' as const, error: 'no disponible' }; },
+ async logoutProviderOAuth() { return { ok: false }; },
  async undo() { return { ok: false, message: 'Deshacer no está disponible en este modo.' }; },
 };
 

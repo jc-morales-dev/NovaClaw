@@ -7,9 +7,11 @@ import {
   getProvider,
   curateOpenRouter,
   prettyModel,
+  CODEX_FALLBACK_MODELS,
   type ModelInfo,
 } from './providers';
 import { toOpenAITools, toAnthropicTools, type ToolSchema } from './toolSchemas';
+import { getCodexAccess } from './openaiCodexAuth';
 
 const ANTHROPIC_VERSION = '2023-06-01';
 
@@ -316,6 +318,174 @@ function tagOpenAIMessagesForCache(out: any[]): void {
   }
 }
 
+// ── OpenAI Codex (cuenta ChatGPT): Responses API ─────────────────────────────
+// El backend de Codex NO habla /chat/completions: habla la Responses API
+// (instructions + input items) sobre https://chatgpt.com/backend-api/codex,
+// autenticada con los tokens OAuth de la cuenta ChatGPT y SIEMPRE en streaming.
+
+// Identificador de sesión para el prompt caching del backend (uno por proceso).
+const CODEX_SESSION_ID = (globalThis.crypto?.randomUUID?.() ?? `nova-${Date.now()}`);
+
+function codexHeaders(access: { accessToken: string; accountId?: string }): Record<string, string> {
+  const h: Record<string, string> = {
+    Authorization: `Bearer ${access.accessToken}`,
+    'Content-Type': 'application/json',
+    // El backend de cuentas ChatGPT identifica al cliente por originator; el de
+    // Codex CLI es el que está habilitado para este client_id OAuth.
+    originator: 'codex_cli_rs',
+    'OpenAI-Beta': 'responses=experimental',
+    session_id: CODEX_SESSION_ID,
+  };
+  if (access.accountId) h['ChatGPT-Account-Id'] = access.accountId;
+  return h;
+}
+
+/** ¿Los bloques crudos guardados son items de la Responses API? (y no bloques
+ *  Anthropic). Protege el cambio de proveedor a mitad de conversación. */
+function isResponsesRawContent(raw: any[] | undefined): boolean {
+  if (!raw || raw.length === 0) return false;
+  return raw.every((item) =>
+    item && typeof item === 'object' &&
+    ['message', 'function_call', 'reasoning', 'web_search_call'].includes(item.type));
+}
+
+/** Historial AgentMessage[] → input items de la Responses API. */
+function toResponsesInput(messages: AgentMessage[]): any[] {
+  const out: any[] = [];
+  for (const m of messages) {
+    if (m.role === 'user') {
+      const content: any[] = [];
+      if (m.text) content.push({ type: 'input_text', text: m.text });
+      let droppedAudio = false;
+      for (const media of m.images ?? []) {
+        if (media.kind === 'audio' || media.kind === 'video') { droppedAudio = true; continue; }
+        content.push({ type: 'input_image', image_url: `data:${media.mediaType};base64,${media.data}` });
+      }
+      if (droppedAudio) {
+        content.push({ type: 'input_text', text: '[El usuario adjuntó audio, pero este modelo no puede escucharlo. Pedile que use un modelo con audio como Gemini, o que transcriba el audio.]' });
+      }
+      if (content.length === 0) content.push({ type: 'input_text', text: '' });
+      out.push({ type: 'message', role: 'user', content });
+    } else if (m.role === 'assistant') {
+      // Reenviar los items crudos INTACTOS (incluye los reasoning cifrados):
+      // con store:false, un function_call sin su reasoning previo da 400.
+      if (isResponsesRawContent(m.rawContent)) {
+        out.push(...m.rawContent!);
+        continue;
+      }
+      if (m.text) {
+        out.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: m.text }] });
+      }
+      for (const tc of m.toolCalls ?? []) {
+        out.push({ type: 'function_call', call_id: tc.id, name: tc.name, arguments: JSON.stringify(tc.args) });
+      }
+    } else if (m.role === 'tool') {
+      out.push({ type: 'function_call_output', call_id: m.toolCallId, output: m.result ?? '' });
+    }
+  }
+  return out;
+}
+
+/** Tools formato Responses: function tools con name/description/parameters al
+ *  nivel raíz (no anidados bajo "function" como en chat/completions). */
+function toResponsesTools(exclude: string[], extra: ToolSchema[]): any[] {
+  return toOpenAITools(exclude, extra).map((t: any) => ({
+    type: 'function',
+    name: t.function.name,
+    description: t.function.description,
+    parameters: t.function.parameters,
+    strict: false,
+  }));
+}
+
+/** Lee el SSE de la Responses API: acumula texto (con deltas en vivo), guarda
+ *  TODOS los output items para reenviarlos al turno siguiente (rawContent) y
+ *  extrae los function_call como toolCalls. */
+async function readResponsesStream(res: Response, onTextDelta?: (delta: string) => void): Promise<ModelReply> {
+  const reader = res.body?.getReader?.();
+  if (!reader) throw new Error('El backend de Codex no devolvió un stream legible.');
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let text = '';
+  const items: any[] = [];
+  let usage: ModelUsage | undefined;
+  let failed: string | null = null;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      let event: any;
+      try { event = JSON.parse(payload); } catch { continue; }
+      switch (event.type) {
+        case 'response.output_text.delta': {
+          const delta = typeof event.delta === 'string' ? event.delta : '';
+          if (delta) {
+            text += delta;
+            try { onTextDelta?.(delta); } catch { /* un sink roto no frena el stream */ }
+          }
+          break;
+        }
+        case 'response.output_item.done':
+          if (event.item && typeof event.item === 'object') items.push(event.item);
+          break;
+        case 'response.completed': {
+          const u = event.response?.usage;
+          if (u) {
+            usage = {
+              inputTokens: u.input_tokens ?? undefined,
+              outputTokens: u.output_tokens ?? undefined,
+              cacheReadTokens: u.input_tokens_details?.cached_tokens ?? undefined,
+            };
+          }
+          break;
+        }
+        case 'response.failed':
+        case 'error':
+          failed = String(event.response?.error?.message ?? event.message ?? 'el backend reportó un error');
+          break;
+        default:
+          break;
+      }
+    }
+  }
+  if (failed) throw new Error(`Codex: ${failed}`);
+
+  const toolCalls = items
+    .filter((it) => it.type === 'function_call' && it.name)
+    .map((it) => {
+      let args: Record<string, any> = {};
+      try { args = JSON.parse(it.arguments || '{}'); } catch { args = {}; }
+      return { id: String(it.call_id ?? it.id ?? ''), name: String(it.name), args };
+    });
+  // Fallback: si no hubo deltas (proxy que no streamea), sacar el texto de los items.
+  if (!text) {
+    text = items
+      .filter((it) => it.type === 'message')
+      .flatMap((it) => (Array.isArray(it.content) ? it.content : []))
+      .filter((c: any) => c?.type === 'output_text' && typeof c.text === 'string')
+      .map((c: any) => c.text)
+      .join('');
+  }
+  return {
+    text: text.trim() || undefined,
+    toolCalls: toolCalls.length ? toolCalls : undefined,
+    rawContent: items.length ? items : undefined,
+    usage,
+  };
+}
+
+// Modelos que ya rechazaron el param reasoning (evita pagar un 400 por iteración).
+const responsesReasoningUnsupported = new Set<string>();
+
 /** Verifica la key llamando al /models real del proveedor y devuelve la lista. */
 export async function verifyAndListModels(
   providerId: string,
@@ -325,6 +495,41 @@ export async function verifyAndListModels(
   if (!provider) return { ok: false, models: [], error: 'Proveedor desconocido.' };
   if (provider.needsKey && !apiKey.trim()) {
     return { ok: false, models: [], error: 'Falta la API key.' };
+  }
+
+  // OpenAI Codex: sin key — autentica con la sesión OAuth de ChatGPT. Si el
+  // /models del backend no coopera, cae al catálogo conocido (mejor ofrecer
+  // los modelos reales de Codex que un error críptico).
+  if (provider.apiFormat === 'openai-responses') {
+    let access: { accessToken: string; accountId?: string };
+    try {
+      access = await getCodexAccess();
+    } catch (error: any) {
+      return { ok: false, models: [], error: error?.message ?? 'Sin sesión de ChatGPT.' };
+    }
+    const fallback = CODEX_FALLBACK_MODELS.map((id) => ({ id, label: prettyModel(id) }));
+    try {
+      const res = await fetch(`${provider.baseUrl}${provider.modelsPath}`, {
+        method: 'GET',
+        headers: codexHeaders(access),
+        signal: AbortSignal.timeout(12000),
+      });
+      if (res.status === 401 || res.status === 403) {
+        return { ok: false, models: [], error: 'La sesión de ChatGPT no tiene acceso a Codex. Cerrá sesión y volvé a entrar.' };
+      }
+      if (!res.ok) return { ok: true, models: fallback };
+      const data = await res.json();
+      const rawList: any[] = Array.isArray(data.data) ? data.data : Array.isArray(data.models) ? data.models : [];
+      const ids = rawList
+        .map((m) => (typeof m === 'string' ? m : m?.id ?? m?.slug ?? m?.model))
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+      const models = ids
+        .filter((id) => !/embed|whisper|tts|dall-e|image|moderation|rerank|realtime/i.test(id))
+        .map((id) => ({ id, label: prettyModel(id) }));
+      return { ok: true, models: models.length ? models : fallback };
+    } catch {
+      return { ok: true, models: fallback };
+    }
   }
 
   try {
@@ -441,7 +646,9 @@ function toAnthropicMessages(messages: AgentMessage[]): any[] {
     } else if (m.role === 'assistant') {
       // Con thinking activado hay que reenviar los bloques crudos tal cual
       // (incluidos los bloques thinking firmados) o la API rechaza el turno.
-      if (m.rawContent && m.rawContent.length > 0) {
+      // Solo si son bloques Anthropic: si el usuario venía chateando con Codex
+      // (Responses API) y cambió a Claude, esos raw items romperían el turno.
+      if (m.rawContent && m.rawContent.length > 0 && !isResponsesRawContent(m.rawContent)) {
         out.push({ role: 'assistant', content: m.rawContent });
         continue;
       }
@@ -484,11 +691,65 @@ export async function callModelWithTools(input: {
 }): Promise<ModelReply> {
   const provider = getProvider(input.providerId);
   if (!provider) throw new Error(`Proveedor desconocido: ${input.providerId}`);
-  const headers = authHeaders(input.providerId, input.apiKey);
   const timeoutMs = input.timeoutMs ?? 180000;
   const exclude = input.excludeTools ?? [];
   const extra = input.extraTools ?? [];
   const noTools = Boolean(input.noTools);
+
+  // ── OpenAI Codex (cuenta ChatGPT): Responses API en streaming ────────────
+  if (provider.apiFormat === 'openai-responses') {
+    const access = await getCodexAccess();
+
+    async function callResponses(
+      auth: { accessToken: string; accountId?: string },
+      withReasoning: boolean,
+    ): Promise<Response> {
+      const body: Record<string, any> = {
+        model: input.model,
+        instructions: input.system,
+        input: toResponsesInput(input.messages),
+        store: false,
+        stream: true,
+        // Devuelve el reasoning cifrado para poder reenviarlo (store:false).
+        include: ['reasoning.encrypted_content'],
+        prompt_cache_key: CODEX_SESSION_ID,
+      };
+      if (!noTools) {
+        body.tools = toResponsesTools(exclude, extra);
+        body.tool_choice = 'auto';
+        body.parallel_tool_calls = false;
+      }
+      if (withReasoning) body.reasoning = { effort: 'medium', summary: 'auto' };
+      return fetchWithRetry(`${provider!.baseUrl}/responses`, {
+        method: 'POST',
+        headers: { ...codexHeaders(auth), Accept: 'text/event-stream' },
+        body: JSON.stringify(body),
+      }, { timeoutMs, abortSignal: input.abortSignal });
+    }
+
+    let wantReasoning = !noTools && !responsesReasoningUnsupported.has(input.model);
+    let res = await callResponses(access, wantReasoning);
+    if (res.status === 401) {
+      // Token vencido a mitad de sesión: refresh forzado y un único reintento.
+      try { await res.text(); } catch { /* descartar body */ }
+      const fresh = await getCodexAccess(true);
+      res = await callResponses(fresh, wantReasoning);
+    }
+    if (res.status === 400 && wantReasoning) {
+      const errText = await res.text();
+      if (/reasoning/i.test(errText)) {
+        responsesReasoningUnsupported.add(input.model);
+        wantReasoning = false;
+        res = await callResponses(access, false);
+      } else {
+        throw new Error(`Codex 400: ${errText}`);
+      }
+    }
+    if (!res.ok) throw new Error(`Codex ${res.status}: ${await res.text()}`);
+    return readResponsesStream(res, input.onTextDelta);
+  }
+
+  const headers = authHeaders(input.providerId, input.apiKey);
 
   if (provider.apiFormat === 'anthropic') {
     const maxTokens = input.maxTokens ?? ANTHROPIC_MAX_TOKENS;
