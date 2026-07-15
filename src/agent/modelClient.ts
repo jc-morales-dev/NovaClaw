@@ -20,10 +20,24 @@ const ANTHROPIC_THINKING_BUDGET = 4096;
 const ANTHROPIC_MAX_TOKENS = 16384;
 const OPENAI_MAX_TOKENS = 8192;
 
-/** Imagen adjunta a un mensaje (para modelos multimodales: cámara, screenshots). */
+/** Media adjunta a un mensaje (modelos multimodales: cámara, screenshots, audio).
+ *  Se llama AgentImage por retrocompat, pero `kind` distingue imagen/audio/video. */
 export interface AgentImage {
-  mediaType: string; // p.ej. 'image/jpeg', 'image/png'
+  mediaType: string; // p.ej. 'image/jpeg', 'audio/mpeg'
   data: string;      // base64 (sin el prefijo data:)
+  kind?: 'image' | 'audio' | 'video'; // ausente = imagen (retrocompat)
+}
+
+/** Formato de audio que espera el bloque input_audio (OpenAI/OpenRouter/Gemini). */
+function audioFormatFromMediaType(mediaType: string): string {
+  const mt = (mediaType || '').toLowerCase();
+  if (mt.includes('wav')) return 'wav';
+  if (mt.includes('ogg') || mt.includes('opus')) return 'ogg';
+  if (mt.includes('flac')) return 'flac';
+  if (mt.includes('aac')) return 'aac';
+  if (mt.includes('mp4') || mt.includes('m4a')) return 'm4a';
+  if (mt.includes('webm')) return 'webm';
+  return 'mp3'; // audio/mpeg y desconocidos
 }
 
 export interface AgentMessage {
@@ -374,11 +388,15 @@ function toOpenAIMessages(system: string, messages: AgentMessage[], cacheClaude 
   for (const m of messages) {
     if (m.role === 'user') {
       if (m.images && m.images.length > 0) {
-        // Contenido multimodal: texto + imágenes (formato OpenAI image_url).
+        // Contenido multimodal: texto + imágenes (image_url) + audio (input_audio).
         const parts: any[] = [];
         if (m.text) parts.push({ type: 'text', text: m.text });
-        for (const img of m.images) {
-          parts.push({ type: 'image_url', image_url: { url: `data:${img.mediaType};base64,${img.data}` } });
+        for (const media of m.images) {
+          if (media.kind === 'audio') {
+            parts.push({ type: 'input_audio', input_audio: { data: media.data, format: audioFormatFromMediaType(media.mediaType) } });
+          } else {
+            parts.push({ type: 'image_url', image_url: { url: `data:${media.mediaType};base64,${media.data}` } });
+          }
         }
         out.push({ role: 'user', content: parts });
       } else {
@@ -409,8 +427,14 @@ function toAnthropicMessages(messages: AgentMessage[]): any[] {
     if (m.role === 'user') {
       const content: any[] = [];
       if (m.text) content.push({ type: 'text', text: m.text });
-      for (const img of m.images ?? []) {
-        content.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType, data: img.data } });
+      let droppedAudio = false;
+      for (const media of m.images ?? []) {
+        // Anthropic acepta imágenes, no audio. El audio se ignora con aviso.
+        if (media.kind === 'audio' || media.kind === 'video') { droppedAudio = true; continue; }
+        content.push({ type: 'image', source: { type: 'base64', media_type: media.mediaType, data: media.data } });
+      }
+      if (droppedAudio) {
+        content.push({ type: 'text', text: '[El usuario adjuntó audio, pero este modelo no puede escucharlo. Pedile que use un modelo con audio como Gemini, o que transcriba el audio.]' });
       }
       if (content.length === 0) content.push({ type: 'text', text: '' });
       out.push({ role: 'user', content });

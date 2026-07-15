@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, ArrowUp, ArrowDown, ArrowRight, Copy, ClipboardPaste } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { platform } from '../platform';
 
@@ -11,6 +11,10 @@ import { platform } from '../platform';
  *
  * Si el WebSocket no conecta (p. ej. el agente no está corriendo), cae al modo
  * simple pregunta/respuesta contra /api/terminal.
+ *
+ * xterm dibuja en canvas, así que el teclado de Android no ofrece flechas/Tab/
+ * Ctrl ni permite seleccionar texto "como HTML". Para eso montamos una barra de
+ * teclas especial (estilo Termux) + botones Copiar/Pegar.
  */
 
 type Mode = 'connecting' | 'pty' | 'web';
@@ -27,6 +31,81 @@ const XTERM_THEME = {
   brightBlue: '#569cd6', brightMagenta: '#c586c0', brightCyan: '#4ec9b0', brightWhite: '#ffffff',
 };
 
+// --- Helpers de portapapeles / buffer -------------------------------------
+
+/** Copia texto al portapapeles. Cae a execCommand si navigator.clipboard falla
+ *  (WebView de Android a veces lo bloquea). Devuelve true si copió. */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.top = '0';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Vuelca todo el buffer visible + scrollback de la terminal a texto plano. */
+function getBufferText(term: any): string {
+  try {
+    const buf = term.buffer.active;
+    const lines: string[] = [];
+    for (let i = 0; i < buf.length; i++) {
+      const line = buf.getLine(i);
+      lines.push(line ? line.translateToString(true) : '');
+    }
+    return lines.join('\n').replace(/\s+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+// --- Definición de las teclas de la barra ---------------------------------
+
+type KeySpec = {
+  id: string;
+  label?: string;
+  icon?: React.ReactNode;
+  seq: string;   // secuencia a mandar al PTY
+  wide?: boolean;
+};
+
+const ESC = '\x1b';
+const KEYS: KeySpec[] = [
+  { id: 'esc', label: 'Esc', seq: ESC },
+  { id: 'tab', label: 'Tab', seq: '\t' },
+  { id: 'left', icon: <ArrowLeft size={15} />, seq: `${ESC}[D` },
+  { id: 'up', icon: <ArrowUp size={15} />, seq: `${ESC}[A` },
+  { id: 'down', icon: <ArrowDown size={15} />, seq: `${ESC}[B` },
+  { id: 'right', icon: <ArrowRight size={15} />, seq: `${ESC}[C` },
+  { id: 'ctrlc', label: '^C', seq: '\x03' },
+  { id: 'ctrld', label: '^D', seq: '\x04' },
+  { id: 'ctrlz', label: '^Z', seq: '\x1a' },
+  { id: 'ctrll', label: '^L', seq: '\x0c' },
+  { id: 'home', label: 'Home', seq: `${ESC}[H` },
+  { id: 'end', label: 'End', seq: `${ESC}[F` },
+  { id: 'pgup', label: 'PgUp', seq: `${ESC}[5~` },
+  { id: 'pgdn', label: 'PgDn', seq: `${ESC}[6~` },
+  { id: 'pipe', label: '|', seq: '|' },
+  { id: 'slash', label: '/', seq: '/' },
+  { id: 'tilde', label: '~', seq: '~' },
+  { id: 'dash', label: '-', seq: '-' },
+];
+
 export default function TerminalView() {
   const navigate = useNavigate();
   const terminalRef = useRef<HTMLDivElement>(null);
@@ -34,6 +113,19 @@ export default function TerminalView() {
   const fitAddonRef = useRef<any>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const [mode, setMode] = useState<Mode>('connecting');
+
+  // Ctrl "sostenido": la próxima letra tipeada se convierte en Ctrl+letra.
+  const ctrlRef = useRef(false);
+  const [ctrlOn, setCtrlOn] = useState(false);
+
+  // Aviso efímero (copiado, pegado, error de portapapeles…)
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<any>(null);
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 1600);
+  }, []);
 
   // Web mode state (fallback)
   const [history, setHistory] = useState<{ type: 'input' | 'output'; text: string }[]>([]);
@@ -49,6 +141,43 @@ export default function TerminalView() {
       { type: 'output', text: 'Escribí "help" para ver comandos.' },
     ]);
   }, []);
+
+  // Manda datos crudos al PTY y devuelve el foco a la terminal (para que el
+  // teclado del sistema no se cierre al tocar un botón de la barra).
+  const sendPty = useCallback((data: string) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'input', data }));
+    }
+    xtermRef.current?.focus();
+  }, []);
+
+  const toggleCtrl = useCallback(() => {
+    ctrlRef.current = !ctrlRef.current;
+    setCtrlOn(ctrlRef.current);
+    xtermRef.current?.focus();
+  }, []);
+
+  const copyFromTerm = useCallback(async () => {
+    const term = xtermRef.current;
+    if (!term) return;
+    const sel = (term.getSelection?.() || '').trim();
+    const text = sel || getBufferText(term);
+    if (!text) { showToast('Nada para copiar'); return; }
+    const ok = await copyText(text);
+    showToast(ok ? (sel ? 'Selección copiada' : 'Pantalla copiada') : 'No pude copiar');
+    term.focus();
+  }, [showToast]);
+
+  const pasteToTerm = useCallback(async () => {
+    try {
+      const t = await navigator.clipboard.readText();
+      if (t) { sendPty(t); showToast('Pegado'); }
+      else showToast('Portapapeles vacío');
+    } catch {
+      showToast('No pude leer el portapapeles');
+    }
+  }, [sendPty, showToast]);
 
   useEffect(() => {
     let disposed = false;
@@ -113,7 +242,15 @@ export default function TerminalView() {
       ws.onerror = () => { if (!opened && !disposed) fallbackToWeb(); };
 
       term.onData((data: string) => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data }));
+        let out = data;
+        // Ctrl sostenido: convierte la próxima letra en su carácter de control.
+        if (ctrlRef.current && data.length === 1) {
+          const up = data.toUpperCase().charCodeAt(0);
+          if (up >= 64 && up <= 95) out = String.fromCharCode(up & 31);
+          ctrlRef.current = false;
+          setCtrlOn(false);
+        }
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data: out }));
       });
 
       const onResize = () => {
@@ -132,6 +269,7 @@ export default function TerminalView() {
 
     return () => {
       disposed = true;
+      if (toastTimer.current) clearTimeout(toastTimer.current);
       try { wsRef.current?.close(); } catch {}
       try { xtermRef.current?._cleanup?.(); } catch {}
       try { xtermRef.current?.dispose?.(); } catch {}
@@ -164,6 +302,10 @@ export default function TerminalView() {
     const parts = normalized.split('/');
     return parts[parts.length - 1] || normalized;
   }
+
+  // preventDefault en el pointerdown evita que el botón robe el foco al textarea
+  // de xterm y cierre el teclado del sistema.
+  const keepFocus = (e: React.PointerEvent) => e.preventDefault();
 
   return (
     <div className="flex flex-col h-full bg-[#0C0C0C] text-zinc-300 font-mono text-[13px] relative">
@@ -217,6 +359,61 @@ export default function TerminalView() {
             </form>
           </div>
           <div ref={bottomRef} className="h-4" />
+        </div>
+      )}
+
+      {/* Toast efímero */}
+      {toast && (
+        <div className="absolute bottom-14 left-1/2 -translate-x-1/2 bg-zinc-800 text-zinc-100 text-xs font-sans px-3 py-1.5 rounded-full shadow-lg border border-zinc-700 pointer-events-none z-20">
+          {toast}
+        </div>
+      )}
+
+      {/* Barra de teclas especial (solo en PTY) */}
+      {mode === 'pty' && (
+        <div className="flex-shrink-0 border-t border-zinc-800 bg-zinc-900/95 backdrop-blur-md">
+          <div className="flex items-center gap-1.5 px-2 py-1.5 overflow-x-auto scrollbar-hide">
+            {/* Ctrl sostenido */}
+            <button
+              onPointerDown={keepFocus}
+              onClick={toggleCtrl}
+              className={`shrink-0 h-9 min-w-[42px] px-2.5 rounded-md text-xs font-sans font-medium transition-colors ${
+                ctrlOn
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-zinc-800 text-zinc-200 active:bg-zinc-700'
+              }`}
+            >
+              Ctrl
+            </button>
+
+            {KEYS.map((k) => (
+              <button
+                key={k.id}
+                onPointerDown={keepFocus}
+                onClick={() => sendPty(k.seq)}
+                className="shrink-0 h-9 min-w-[42px] px-2.5 rounded-md bg-zinc-800 text-zinc-200 active:bg-zinc-700 text-xs font-sans font-medium flex items-center justify-center transition-colors"
+              >
+                {k.icon ?? k.label}
+              </button>
+            ))}
+
+            <div className="shrink-0 w-px h-6 bg-zinc-700 mx-0.5" />
+
+            <button
+              onPointerDown={keepFocus}
+              onClick={copyFromTerm}
+              className="shrink-0 h-9 px-3 rounded-md bg-zinc-800 text-zinc-200 active:bg-zinc-700 text-xs font-sans font-medium flex items-center gap-1.5 transition-colors"
+            >
+              <Copy size={14} /> Copiar
+            </button>
+            <button
+              onPointerDown={keepFocus}
+              onClick={pasteToTerm}
+              className="shrink-0 h-9 px-3 rounded-md bg-zinc-800 text-zinc-200 active:bg-zinc-700 text-xs font-sans font-medium flex items-center gap-1.5 transition-colors"
+            >
+              <ClipboardPaste size={14} /> Pegar
+            </button>
+          </div>
         </div>
       )}
     </div>

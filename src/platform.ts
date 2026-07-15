@@ -87,13 +87,13 @@ interface PlatformAdapter {
  installRuntime(): Promise<void>;
  subscribeBootstrap(listener: (status: BootstrapStatus) => void): () => void;
  startAgent(): Promise<void>;
- sendChat(message: string, sessionId: string, images?: Array<{ mediaType: string; data: string }>): Promise<ChatResponse>;
+ sendChat(message: string, sessionId: string, images?: Array<{ mediaType: string; data: string; kind?: 'image' | 'audio' | 'video' }>): Promise<ChatResponse>;
  approveAction(sessionId: string, approved: boolean): Promise<ChatResponse>;
  /** Como sendChat pero entrega cada evento EN VIVO vía onEvent (streaming).
   * Si el streaming no está disponible, cae a sendChat y emite igual por onEvent.
   * El `signal` opcional permite DETENER la respuesta en curso (botón Stop).
   * `images` = imágenes adjuntas (visión). */
- sendChatStream(message: string, sessionId: string, onEvent: (ev: ChatEvent) => void, signal?: AbortSignal, mode?: 'plan' | 'build' | 'auto', images?: Array<{ mediaType: string; data: string }>): Promise<ChatResponse>;
+ sendChatStream(message: string, sessionId: string, onEvent: (ev: ChatEvent) => void, signal?: AbortSignal, mode?: 'plan' | 'build' | 'auto', images?: Array<{ mediaType: string; data: string; kind?: 'image' | 'audio' | 'video' }>): Promise<ChatResponse>;
  approveActionStream(sessionId: string, approved: boolean, onEvent: (ev: ChatEvent) => void, signal?: AbortSignal, scope?: 'once' | 'always'): Promise<ChatResponse>;
  getChatHistory(sessionId: string): Promise<ChatHistoryResponse>;
  /** Sube CUALQUIER archivo al workspace del agente y devuelve su ruta. */
@@ -587,7 +587,7 @@ const capacitorAdapter: PlatformAdapter = {
  }
  },
 
- async sendChat(message: string, sessionId: string, images?: Array<{ mediaType: string; data: string }>): Promise<ChatResponse> {
+ async sendChat(message: string, sessionId: string, images?: Array<{ mediaType: string; data: string; kind?: 'image' | 'audio' | 'video' }>): Promise<ChatResponse> {
  const session = capacitorSessions.get(sessionId) ?? createNewSession(sessionId);
  const apiKey = await resolveApiKey();
  if (!apiKey) return { events: [{ type: 'message', message: NO_KEY_MESSAGE }] };

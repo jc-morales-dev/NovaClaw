@@ -10,13 +10,17 @@ import {
   Copy,
   FileCode2,
   FileText,
+  Film,
   FolderOpen,
   FolderTree,
   History,
   Image as ImageIcon,
+  Mic,
+  Music,
   Paperclip,
   Pencil,
   Plus,
+  ShieldCheck,
   Sparkles,
   Square,
   Terminal as TerminalIcon,
@@ -99,6 +103,8 @@ export interface Message {
   imageUrl?: string;
   /** Nombre de un archivo (no-imagen) adjunto por el usuario (chip en su burbuja). */
   fileName?: string;
+  /** Nombre de un audio adjunto por el usuario (chip en su burbuja). */
+  audioName?: string;
   toolExecution?: ToolExecutionMessage;
   approvalRequest?: ApprovalRequestMessage;
   todos?: TodoItem[];
@@ -488,6 +494,33 @@ function ToolExecutionBlock({ msg }: { msg: Message }) {
   );
 }
 
+// Deriva un comando/objetivo legible desde los argumentos de la herramienta,
+// para mostrarlo lindo en la tarjeta de permiso (en vez del JSON crudo).
+function approvalCommand(tool: string, args: Record<string, unknown>): string {
+  const s = (v: unknown) => (typeof v === 'string' ? v : v == null ? '' : String(v));
+  switch (tool) {
+    case 'terminal.run':
+      return s(args.command);
+    case 'file.write':
+    case 'file.edit':
+    case 'file.read':
+    case 'file.list':
+    case 'workspace.mkdir':
+      return s(args.path);
+    case 'file.grep':
+    case 'file.search':
+      return s(args.pattern ?? args.query);
+    case 'web.fetch':
+      return s(args.url);
+    default: {
+      const parts = Object.entries(args)
+        .filter(([, v]) => typeof v === 'string' || typeof v === 'number')
+        .map(([k, v]) => `${k}: ${s(v)}`);
+      return parts.join('   ') || JSON.stringify(args);
+    }
+  }
+}
+
 function ApprovalRequestBlock({
   msg,
   onResolve,
@@ -504,62 +537,78 @@ function ApprovalRequestBlock({
   if (!msg.approvalRequest) return null;
 
   const { summary, reason, toolCall, status } = msg.approvalRequest;
+  const label = TOOL_LABELS[toolCall.tool] ?? toolCall.tool.replace(/\./g, ' ');
+  const command = approvalCommand(toolCall.tool, toolCall.arguments);
+  const detail = reason || summary;
+
+  const statusPill =
+    status === 'approved'
+      ? { text: 'Permitido', cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' }
+      : status === 'rejected'
+        ? { text: 'Rechazado', cls: 'bg-red-500/15 text-red-300 border-red-500/30' }
+        : { text: 'Requiere tu permiso', cls: 'bg-amber-500/15 text-amber-300 border-amber-500/30' };
 
   return (
-    <div className="max-w-[90%] bg-zinc-900 border border-zinc-800 rounded-2xl rounded-tl-sm px-4 py-4 shadow-sm">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <p className="text-[15px] font-semibold text-zinc-100">Approval required</p>
-        <span
-          className={`text-[11px] uppercase tracking-wider font-semibold ${
-            status === 'approved'
-              ? 'text-emerald-400'
-              : status === 'rejected'
-                ? 'text-red-400'
-                : 'text-amber-400'
-          }`}
-        >
-          {status}
+    <div className="max-w-[92%] rounded-2xl rounded-tl-sm overflow-hidden border border-[#FF7A1A]/25 bg-gradient-to-b from-zinc-900 to-zinc-900/60 shadow-lg shadow-black/30">
+      {/* Encabezado */}
+      <div className="flex items-center gap-2.5 px-4 py-3 border-b border-white/5 bg-white/[0.02]">
+        <span className="w-8 h-8 shrink-0 rounded-xl bg-[#FF7A1A]/15 flex items-center justify-center text-[#FFB25C]">
+          <ShieldCheck size={17} strokeWidth={2.2} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[14.5px] font-semibold text-zinc-100 leading-tight">Permiso para actuar</p>
+          <p className="text-[11.5px] text-zinc-500 leading-tight mt-0.5">El agente quiere ejecutar una acción</p>
+        </div>
+        <span className={`shrink-0 text-[10.5px] font-semibold px-2 py-1 rounded-full border ${statusPill.cls}`}>
+          {statusPill.text}
         </span>
       </div>
 
-      <p className="text-[14px] text-zinc-100 leading-relaxed">{reason}</p>
-      <p className="text-[13px] text-zinc-400 leading-relaxed mt-3 break-words">{summary}</p>
-      <div className="mt-3 p-3 rounded-xl bg-zinc-950 border border-zinc-800 text-[13px] text-zinc-300 whitespace-pre-wrap break-words">
-        {toolCall.tool}
-        {'\n'}
-        {JSON.stringify(toolCall.arguments, null, 2)}
-      </div>
+      <div className="px-4 py-3.5">
+        {detail && <p className="text-[13.5px] text-zinc-300 leading-relaxed mb-3">{detail}</p>}
 
-      {status === 'pending' && (
-        <div className="mt-4 space-y-2">
-          <div className="flex gap-2">
+        {/* Comando en bloque estilo consola */}
+        <div className="rounded-xl bg-[#0C0C0C] border border-white/10 overflow-hidden">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-white/5 bg-white/[0.02]">
+            <span className="w-2 h-2 rounded-full bg-[#FF7A1A]" />
+            <span className="text-[11px] font-semibold text-zinc-400 tracking-wide">{label}</span>
+          </div>
+          <pre className="px-3 py-2.5 text-[12.5px] leading-relaxed text-zinc-200 font-mono whitespace-pre-wrap break-words max-h-52 overflow-y-auto scrollbar-hide">
+            {command || '—'}
+          </pre>
+        </div>
+
+        {status === 'pending' && (
+          <div className="mt-3.5 space-y-2">
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onResolve(msg.id, true, 'once')}
+                className="flex-1 bg-gradient-to-br from-[#FF7A1A] to-amber-500 hover:brightness-110 active:scale-[0.98] disabled:opacity-50 disabled:active:scale-100 text-white text-[14px] font-semibold px-4 py-2.5 rounded-xl transition-all shadow-sm shadow-[#FF7A1A]/20"
+              >
+                {approveLabel}
+              </button>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onResolve(msg.id, false, 'once')}
+                className="flex-1 bg-white/5 hover:bg-white/10 active:scale-[0.98] disabled:opacity-50 disabled:active:scale-100 text-zinc-200 text-[14px] font-semibold px-4 py-2.5 rounded-xl transition-all border border-white/10"
+              >
+                {rejectLabel}
+              </button>
+            </div>
             <button
               type="button"
               disabled={disabled}
-              onClick={() => onResolve(msg.id, true, 'once')}
-              className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors"
+              onClick={() => onResolve(msg.id, true, 'always')}
+              className="w-full text-[12.5px] text-zinc-500 hover:text-[#FFB25C] disabled:opacity-50 font-medium px-4 py-1.5 rounded-lg transition-colors"
             >
-              {approveLabel}
-            </button>
-            <button
-              type="button"
-              disabled={disabled}
-              onClick={() => onResolve(msg.id, false, 'once')}
-              className="flex-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-100 text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors"
-            >
-              {rejectLabel}
+              Permitir siempre en este chat
             </button>
           </div>
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onResolve(msg.id, true, 'always')}
-            className="w-full border border-[#FF7A1A]/40 text-[#FFB25C] hover:bg-[#FF7A1A]/10 disabled:opacity-50 text-[13.5px] font-semibold px-4 py-2.5 rounded-xl transition-colors"
-          >
-            Permitir siempre en este chat
-          </button>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -579,6 +628,8 @@ export default function ChatView() {
 
   const [input, setInput] = useState('');
   const [attachedImage, setAttachedImage] = useState<{ mediaType: string; data: string; url: string; name: string } | null>(null);
+  // Audio adjunto en línea (base64) para modelos con oído (Gemini, GPT-4o-audio…).
+  const [attachedAudio, setAttachedAudio] = useState<{ mediaType: string; data: string; name: string } | null>(null);
   const [attachedFile, setAttachedFile] = useState<{ name: string; size: number; path: string; uploading: boolean } | null>(null);
   // Menú del clip: Galería → Cámara → Archivos (en ese orden, pedido del usuario).
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
@@ -709,7 +760,7 @@ export default function ChatView() {
   async function sendChatMessage(
     userText: string,
     signal: AbortSignal,
-    images?: Array<{ mediaType: string; data: string }>,
+    images?: Array<{ mediaType: string; data: string; kind?: 'image' | 'audio' | 'video' }>,
   ) {
     // Streaming: cada evento (mensaje, tool call, aprobación) aparece EN VIVO.
     // En modo Plan el agente solo analiza y propone; en Build ejecuta.
@@ -761,19 +812,34 @@ export default function ChatView() {
    *  Con accept/capture afinados, Android abre DIRECTO la galería o la cámara en
    *  vez de su menú genérico. handleFileSelected procesa el resultado igual que
    *  siempre (no cambia nada del flujo de subida). */
-  const pickAttachment = (kind: 'gallery' | 'camera' | 'files') => {
+  // Audio: se manda EN LÍNEA (base64) al modelo, igual que una imagen, para que
+  // los modelos con oído (Gemini, GPT-4o-audio) lo escuchen. Tope 15 MB.
+  const attachAudio = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      const data = dataUrl.slice(dataUrl.indexOf(',') + 1);
+      setAttachedAudio({ mediaType: file.type || 'audio/mpeg', data, name: file.name });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const pickAttachment = (kind: 'gallery' | 'camera' | 'audio' | 'video' | 'files') => {
     setAttachMenuOpen(false);
     const inputEl = fileInputRef.current;
     if (!inputEl) return;
+    inputEl.removeAttribute('capture');
     if (kind === 'gallery') {
       inputEl.setAttribute('accept', 'image/*');
-      inputEl.removeAttribute('capture');
     } else if (kind === 'camera') {
       inputEl.setAttribute('accept', 'image/*');
       inputEl.setAttribute('capture', 'environment');
+    } else if (kind === 'audio') {
+      inputEl.setAttribute('accept', 'audio/*');
+    } else if (kind === 'video') {
+      inputEl.setAttribute('accept', 'video/*');
     } else {
       inputEl.removeAttribute('accept');
-      inputEl.removeAttribute('capture');
     }
     inputEl.click();
   };
@@ -790,6 +856,17 @@ export default function ChatView() {
       attachImage(file);
       return;
     }
+    // Audio en línea (visión→oído): base64 al modelo. Tope 15 MB (base64 pesa +33%).
+    if (/^audio\//.test(file.type)) {
+      if (file.size > 15 * 1024 * 1024) {
+        window.alert('El audio es muy grande (máximo 15 MB para mandarlo al modelo).');
+        return;
+      }
+      attachAudio(file);
+      return;
+    }
+    // Video y cualquier otro archivo: se SUBEN al workspace del agente (los videos
+    // son muy pesados para mandarlos en línea) y el agente los procesa por ruta.
     if (!platform.uploadFile) {
       window.alert('La subida de archivos no está disponible en este modo.');
       return;
@@ -891,8 +968,9 @@ export default function ChatView() {
   const submitText = async (rawText: string) => {
     const userText = rawText.trim();
     const image = attachedImage;
+    const audio = attachedAudio;
     const fileAtt = attachedFile;
-    if ((!userText && !image && !fileAtt) || isTyping) return;
+    if ((!userText && !image && !audio && !fileAtt) || isTyping) return;
     if (fileAtt?.uploading) { window.alert('Esperá a que termine de subir el archivo.'); return; }
 
     // Comandos slash (/deshacer, /plan, /build) se ejecutan acá, no van al agente.
@@ -909,6 +987,8 @@ export default function ChatView() {
       agentText += `\n\n[Archivo adjunto: ${fileAtt.name} — ${fileAtt.path}]`;
     }
 
+    if (audio && !agentText) agentText = 'Escuchá este audio y respondé.';
+
     setMessages((prev) => [
       ...prev,
       {
@@ -917,20 +997,27 @@ export default function ChatView() {
         content: userText,
         imageUrl: image?.url,
         fileName: fileAtt?.name,
+        audioName: audio?.name,
       },
     ]);
     setInput('');
     setAttachedImage(null);
+    setAttachedAudio(null);
     setAttachedFile(null);
     setIsTyping(true);
 
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      const images = image ? [{ mediaType: image.mediaType, data: image.data }] : undefined;
+      // Media en línea al modelo: imagen (visión) + audio (oído). `kind` deja que
+      // modelClient arme el bloque correcto (image_url vs input_audio).
+      const media: Array<{ mediaType: string; data: string; kind?: 'image' | 'audio' | 'video' }> = [];
+      if (image) media.push({ mediaType: image.mediaType, data: image.data, kind: 'image' });
+      if (audio) media.push({ mediaType: audio.mediaType, data: audio.data, kind: 'audio' });
+      const images = media.length ? media : undefined;
       await sendChatMessage(agentText, controller.signal, images);
       // Guardar/renombrar la conversación en el historial (título por tema).
-      await upsertHistoryEntry(userText || fileAtt?.name || 'Imagen');
+      await upsertHistoryEntry(userText || fileAtt?.name || audio?.name || 'Imagen');
     } catch (error: any) {
       if (error?.name !== 'AbortError') {
         setMessages((prev) => [
@@ -1167,6 +1254,12 @@ export default function ChatView() {
                       <span className="text-[13px] text-zinc-200 truncate max-w-[190px]">{msg.fileName}</span>
                     </div>
                   )}
+                  {msg.audioName && (
+                    <div className="flex items-center gap-2 rounded-2xl rounded-br-md bg-zinc-800/80 border border-white/10 px-3 py-2">
+                      <Music size={16} className="text-[#FFB25C] shrink-0" />
+                      <span className="text-[13px] text-zinc-200 truncate max-w-[190px]">{msg.audioName}</span>
+                    </div>
+                  )}
                   {msg.content && (
                     <div className="max-w-[82%] bg-zinc-800/80 text-zinc-100 rounded-2xl rounded-br-md px-4 py-2.5 text-[15px] leading-relaxed whitespace-pre-wrap break-words">
                       {msg.content}
@@ -1321,6 +1414,25 @@ export default function ChatView() {
             </button>
           </div>
         )}
+        {attachedAudio && (
+          <div className="mb-2 flex items-center gap-2 w-fit max-w-full rounded-2xl bg-zinc-900/90 border border-white/10 p-2 pr-3">
+            <span className="w-9 h-9 shrink-0 rounded-xl bg-zinc-800 flex items-center justify-center text-[#FFB25C]">
+              <Music size={17} />
+            </span>
+            <div className="min-w-0">
+              <div className="text-[13px] text-zinc-200 truncate max-w-[190px]">{attachedAudio.name}</div>
+              <div className="text-[11px] text-zinc-500">Audio para el modelo</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAttachedAudio(null)}
+              aria-label="Quitar audio"
+              className="ml-1 w-6 h-6 flex items-center justify-center rounded-full bg-zinc-700/80 text-zinc-200 hover:bg-zinc-600 transition-colors shrink-0"
+            >
+              <X size={13} strokeWidth={2.6} />
+            </button>
+          </div>
+        )}
         {attachedFile && (
           <div className="mb-2 flex items-center gap-2 w-fit max-w-full rounded-2xl bg-zinc-900/90 border border-white/10 p-2 pr-3">
             <span className="w-9 h-9 shrink-0 rounded-xl bg-zinc-800 flex items-center justify-center text-[#FFB25C]">
@@ -1369,6 +1481,20 @@ export default function ChatView() {
                   </button>
                   <button
                     type="button"
+                    onClick={() => pickAttachment('audio')}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-sm text-zinc-200 hover:bg-white/5 active:bg-white/10 transition-colors border-t border-white/5"
+                  >
+                    <Mic size={18} className="text-[#FF7A1A]" /> Audio
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => pickAttachment('video')}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-sm text-zinc-200 hover:bg-white/5 active:bg-white/10 transition-colors border-t border-white/5"
+                  >
+                    <Film size={18} className="text-[#FF7A1A]" /> Video
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => pickAttachment('files')}
                     className="w-full flex items-center gap-3 px-4 py-3 text-sm text-zinc-200 hover:bg-white/5 active:bg-white/10 transition-colors border-t border-white/5"
                   >
@@ -1411,7 +1537,7 @@ export default function ChatView() {
           ) : (
             <button
               type="submit"
-              disabled={!input.trim() && !attachedImage && (!attachedFile || attachedFile.uploading)}
+              disabled={!input.trim() && !attachedImage && !attachedAudio && (!attachedFile || attachedFile.uploading)}
               aria-label="Enviar"
               className="w-9 h-9 flex items-center justify-center rounded-full shrink-0 self-end mb-0.5 transition-all disabled:bg-zinc-800 disabled:text-zinc-600 enabled:bg-gradient-to-br enabled:from-[#FF7A1A] enabled:to-amber-500 enabled:text-white enabled:hover:brightness-110 enabled:active:scale-95"
             >

@@ -365,7 +365,7 @@ export function createAgentRuntime(options: RuntimeOptions) {
     onEvent?: AgentEventSink,
     _signal?: AbortSignal,
     mode?: AgentMode,
-    _images?: Array<{ mediaType: string; data: string }>, // visión no soportada en el runtime legacy (sin API key)
+    _images?: Array<{ mediaType: string; data: string; kind?: 'image' | 'audio' | 'video' }>, // visión no soportada en el runtime legacy (sin API key)
   ): Promise<RuntimeResult> {
     turnMode = mode ?? 'build';
     session.history.push({ role: 'user', content: message });

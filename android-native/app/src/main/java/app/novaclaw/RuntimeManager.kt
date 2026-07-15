@@ -405,7 +405,21 @@ class RuntimeManager(private val context: Context) {
             // certificate". Con el CA embebido de Node, el TLS funciona sin depender
             // de que el paquete ca-certificates se haya configurado bien.
             agentVars["NODE_OPTIONS"] = "--use-bundled-ca"
-            val binds = listOf(
+            // Almacenamiento REAL del teléfono dentro del proot. Sin estos binds,
+            // /sdcard y /storage/emulated/0 resolvían DENTRO del rootfs privado de
+            // la app: el agente "guardaba en Descargas" con éxito pero el usuario
+            // no veía nada (bug reportado: mi-pagina.html invisible). Con el bind,
+            // esas rutas van al almacenamiento compartido de verdad; si falta el
+            // permiso de archivos, el syscall devuelve EACCES (error honesto que
+            // el agente puede explicar) en vez de escribir a un /sdcard fantasma.
+            val sharedStorage = android.os.Environment.getExternalStorageDirectory()
+            val storageBinds = if (sharedStorage != null && sharedStorage.exists()) {
+                listOf(
+                    sharedStorage.absolutePath to "/sdcard",
+                    sharedStorage.absolutePath to "/storage/emulated/0",
+                )
+            } else emptyList()
+            val binds = storageBinds + listOf(
                 agentDir.absolutePath to "/opt/nova-agent",
                 paths.filesDir to "/nova-data",
                 paths.homeDir to "/root",
