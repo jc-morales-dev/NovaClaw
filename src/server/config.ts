@@ -2,7 +2,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { getProvider } from '../agent/providers';
-import { hasCodexAuth } from '../agent/openaiCodexAuth';
+import { hasCodexAuth, initCodexAuthStorage } from '../agent/openaiCodexAuth';
+
+// Storage REAL de los tokens de ChatGPT (openaiCodexAuth no puede tocar fs por
+// sí mismo: ese módulo también se bundlea para el navegador). Vive en el HOME
+// del Linux embebido — el sandbox privado de la app.
+const CODEX_AUTH_FILE = path.join(process.env.HOME || process.cwd(), '.novaclaw-openai-auth.json');
+initCodexAuthStorage({
+  read: () => { try { return fs.readFileSync(CODEX_AUTH_FILE, 'utf8'); } catch { return null; } },
+  write: (data) => fs.writeFileSync(CODEX_AUTH_FILE, data, { encoding: 'utf8', mode: 0o600 }),
+  remove: () => { try { fs.unlinkSync(CODEX_AUTH_FILE); } catch { /* ya no estaba */ } },
+});
 
 // Configuración del proveedor de IA. Mutable en runtime para que la pantalla de
 // Ajustes pueda cambiar baseUrl/apiKey/model SIN reiniciar el agente ni recompilar.

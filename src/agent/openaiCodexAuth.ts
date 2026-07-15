@@ -16,15 +16,30 @@
  * protección que el resto de la config. El access token dura ~horas y se
  * refresca solo; el refresh token dura semanas.
  */
-import fs from 'node:fs';
-import path from 'node:path';
-
 const ISSUER = 'https://auth.openai.com';
 // Client ID PÚBLICO del CLI oficial de Codex (openai/codex, login/src/auth/manager.rs).
 // No es un secreto: identifica a la app OAuth, la identidad la pone el usuario al loguearse.
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
-const AUTH_FILE = path.join(process.env.HOME || process.cwd(), '.novaclaw-openai-auth.json');
 const JSON_HEADERS = { 'Content-Type': 'application/json', Accept: 'application/json' };
+
+// ⚠️ Este módulo lo importa modelClient, que TAMBIÉN se bundlea para el
+// NAVEGADOR (la UI usa verifyAndListModels vía el adapter legacy). Por eso acá
+// NO puede haber imports de node:fs/node:path ni accesos a process a nivel de
+// módulo — eso rompía la UI entera con "process is not defined" (pantalla
+// negra). El almacenamiento de tokens se INYECTA desde el server (config.ts),
+// que sí corre en Node; en el navegador queda sin configurar y las funciones
+// responden "sin sesión".
+export interface CodexAuthStorage {
+  read(): string | null;
+  write(data: string): void;
+  remove(): void;
+}
+
+let authStorage: CodexAuthStorage | null = null;
+
+export function initCodexAuthStorage(storage: CodexAuthStorage): void {
+  authStorage = storage;
+}
 
 export interface CodexTokens {
   accessToken: string;
@@ -53,7 +68,9 @@ export type CodexDevicePoll =
 
 export function loadCodexTokens(): CodexTokens | null {
   try {
-    const raw = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8'));
+    const text = authStorage?.read();
+    if (!text) return null;
+    const raw = JSON.parse(text);
     if (typeof raw?.accessToken === 'string' && typeof raw?.refreshToken === 'string') {
       return raw as CodexTokens;
     }
@@ -62,11 +79,12 @@ export function loadCodexTokens(): CodexTokens | null {
 }
 
 function saveCodexTokens(tokens: CodexTokens): void {
-  fs.writeFileSync(AUTH_FILE, JSON.stringify(tokens, null, 2), { encoding: 'utf8', mode: 0o600 });
+  if (!authStorage) throw new Error('El login con ChatGPT solo está disponible en el agente.');
+  authStorage.write(JSON.stringify(tokens, null, 2));
 }
 
 export function clearCodexTokens(): void {
-  try { fs.unlinkSync(AUTH_FILE); } catch { /* ya no estaba */ }
+  try { authStorage?.remove(); } catch { /* ya no estaba */ }
 }
 
 export function hasCodexAuth(): boolean {
@@ -79,7 +97,13 @@ function jwtPayload(token: string): any | null {
   try {
     const part = token.split('.')[1];
     if (!part) return null;
-    return JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+    // base64url → utf8 sin depender de Buffer (el módulo también se bundlea
+    // para el navegador, aunque ahí nunca haya tokens que decodificar).
+    const b64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    const text = typeof Buffer !== 'undefined'
+      ? Buffer.from(b64, 'base64').toString('utf8')
+      : new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+    return JSON.parse(text);
   } catch { return null; }
 }
 
