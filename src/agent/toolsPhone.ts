@@ -19,6 +19,7 @@ export const PHONE_TOOLS = new Set([
   'phone.contacts',
   'phone.calendar',
   'phone.photo',
+  'phone.packages',
   'image.view',
 ]);
 
@@ -127,6 +128,74 @@ export async function executePhoneTool(
         command: `calendar ${days}d`,
         status: 'error',
         output: error?.message ?? 'Could not read calendar.',
+        cwd: context.cwd,
+      };
+    }
+  }
+
+  if (call.tool === 'phone.packages') {
+    const action = ['installed', 'uninstalled', 'search'].includes(String(call.arguments.action))
+      ? String(call.arguments.action)
+      : 'installed';
+    const q = String(call.arguments.query ?? '').trim();
+    const includeSystem = call.arguments.include_system === true;
+    const limit = Math.max(1, Math.min(300, Math.floor(Number(call.arguments.limit) || 50)));
+    const cmd = `packages ${action}${q ? ` "${q}"` : ''}`;
+    try {
+      const params = new URLSearchParams({ action, limit: String(limit) });
+      if (q) params.set('q', q);
+      if (includeSystem) params.set('system', '1');
+      const data = await callNativeTool(`/packages?${params.toString()}`);
+
+      if (action === 'uninstalled') {
+        const items = Array.isArray(data.uninstalled) ? data.uninstalled : [];
+        const list = items
+          .map((p: any) => {
+            const name = p.name ? `${p.name} (${p.package})` : p.package;
+            const when = p.uninstalledAt
+              ? `desinstalada el ${p.uninstalledAt}`
+              : `desinstalada entre ${p.uninstalledBetween}`;
+            return `- ${name} — ${when}`;
+          })
+          .join('\n');
+        return {
+          name: 'phone.packages',
+          command: cmd,
+          status: 'success',
+          output: items.length
+            ? `${data.count} desinstalación(es) registradas (la más reciente primero):\n${list}`
+            : String(data.note || 'Sin desinstalaciones registradas todavía.'),
+          cwd: context.cwd,
+        };
+      }
+
+      const items = Array.isArray(data.packages) ? data.packages : [];
+      const list = items
+        .map((p: any) => {
+          const extras = [
+            p.version ? `v${p.version}` : '',
+            `instalada ${p.installedAt}`,
+            p.updatedAt ? `act. ${p.updatedAt}` : '',
+            p.system ? 'sistema' : '',
+          ].filter(Boolean).join(', ');
+          return `- ${p.name} (${p.package}) — ${extras}`;
+        })
+        .join('\n');
+      return {
+        name: 'phone.packages',
+        command: cmd,
+        status: 'success',
+        output: items.length
+          ? `${data.count} de ${data.total} app(s)${action === 'search' ? ` que coinciden con "${q}"` : ', las instaladas más recientemente primero'}:\n${list}`
+          : (action === 'search' ? `Ninguna app coincide con "${q}".` : 'No se encontraron apps.'),
+        cwd: context.cwd,
+      };
+    } catch (error: any) {
+      return {
+        name: 'phone.packages',
+        command: cmd,
+        status: 'error',
+        output: error?.message ?? 'Could not read the package list.',
         cwd: context.cwd,
       };
     }

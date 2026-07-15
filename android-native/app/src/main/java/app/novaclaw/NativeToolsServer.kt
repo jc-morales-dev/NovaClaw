@@ -56,6 +56,9 @@ class NativeToolsServer(private val context: Context, private val token: String 
     fun start() {
         if (server != null) return
         thread(name = "novaclaw-native-tools", isDaemon = true) {
+            // Baseline del historial de APKs: sin un primer snapshot, el diff no
+            // puede detectar desinstalaciones que ocurran con la app cerrada.
+            try { PackageTracker.syncSnapshot(context) } catch (_: Exception) {}
             try {
                 val socket = ServerSocket(PORT, 8, InetAddress.getByName("127.0.0.1"))
                 server = socket
@@ -107,6 +110,7 @@ class NativeToolsServer(private val context: Context, private val token: String 
                         "/contacts" -> if (authed) getContacts(query["q"] ?: query["query"] ?: "") else forbidden()
                         "/calendar" -> if (authed) getCalendar(query["days"] ?: "14") else forbidden()
                         "/photo" -> if (authed) takePhoto(query["facing"] ?: "back") else forbidden()
+                        "/packages" -> if (authed) getPackages(query) else forbidden()
                         // Secreto de un MCP (token), cifrado en el Keystore. El agente lo
                         // pide al conectar un servidor MCP con env ${SECRET:<id>}.
                         "/secret" -> if (authed) getMcpSecret(query["ref"] ?: "") else forbidden()
@@ -390,6 +394,88 @@ class NativeToolsServer(private val context: Context, private val token: String 
             return JSONObject().put("error", "calendar permission denied")
         }
         return JSONObject().put("count", results.length()).put("events", results)
+    }
+
+    // ── Paquetes (APKs instaladas / desinstaladas) ────────────────────────────
+    /**
+     * action=installed  → apps instaladas, las más recientes primero (fecha real
+     *                     de instalación vía PackageInfo.firstInstallTime).
+     * action=uninstalled→ historial de desinstalaciones de PackageTracker
+     *                     (broadcast + diff de snapshots).
+     * action=search     → busca por nombre visible o nombre de paquete.
+     * q, system=1, limit acotan/filtran el resultado.
+     */
+    private fun getPackages(query: Map<String, String>): JSONObject {
+        val action = (query["action"] ?: "installed").lowercase(Locale.ROOT)
+        val q = (query["q"] ?: "").trim().lowercase(Locale.ROOT)
+        val includeSystem = query["system"] == "1"
+        val limit = (query["limit"]?.toIntOrNull() ?: 50).coerceIn(1, 300)
+        val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale("es"))
+
+        // Mantener el diff al día ANTES de responder: así "uninstalled" ve hasta
+        // lo que se borró hace un minuto aunque el broadcast se haya perdido.
+        PackageTracker.syncSnapshot(context)
+
+        if (action == "uninstalled") {
+            val history = PackageTracker.removedHistory(context)
+            val results = JSONArray()
+            for (i in 0 until history.length()) {
+                if (results.length() >= limit) break
+                val e = history.optJSONObject(i) ?: continue
+                val pkg = e.optString("package")
+                val label = e.optString("label")
+                if (q.isNotBlank() && !pkg.lowercase(Locale.ROOT).contains(q) &&
+                    !label.lowercase(Locale.ROOT).contains(q)) continue
+                val o = JSONObject().put("package", pkg)
+                if (label.isNotBlank()) o.put("name", label)
+                if (e.optBoolean("approx")) {
+                    // No vimos el broadcast: solo sabemos la ventana temporal.
+                    val since = e.optLong("since", 0L)
+                    o.put("uninstalledBetween",
+                        "${if (since > 0) fmt.format(java.util.Date(since)) else "?"} y ${fmt.format(java.util.Date(e.optLong("at")))}")
+                } else {
+                    o.put("uninstalledAt", fmt.format(java.util.Date(e.optLong("at"))))
+                }
+                results.put(o)
+            }
+            return JSONObject().put("count", results.length()).put("uninstalled", results)
+                .put("note", if (results.length() == 0)
+                    "Sin desinstalaciones registradas todavía. El historial se arma desde que NovaClaw está instalada (Android no expone desinstalaciones anteriores a apps normales)."
+                    else "")
+        }
+
+        // installed / search
+        val pm = context.packageManager
+        data class Row(val pkg: String, val name: String, val version: String,
+                       val installedAt: Long, val updatedAt: Long, val system: Boolean)
+        val rows = ArrayList<Row>()
+        for (info in pm.getInstalledPackages(0)) {
+            val app = info.applicationInfo ?: continue
+            val isSystem = (app.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0 &&
+                (app.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0
+            // En búsqueda se mira TODO (el usuario puede buscar una app de sistema);
+            // en el listado, las de sistema solo si las pidió explícitamente.
+            if (isSystem && !includeSystem && action != "search") continue
+            val name = app.loadLabel(pm).toString()
+            if (action == "search" && q.isNotBlank() &&
+                !name.lowercase(Locale.ROOT).contains(q) &&
+                !info.packageName.lowercase(Locale.ROOT).contains(q)) continue
+            rows.add(Row(info.packageName, name, info.versionName ?: "",
+                info.firstInstallTime, info.lastUpdateTime, isSystem))
+        }
+        rows.sortByDescending { it.installedAt }
+        val results = JSONArray()
+        for (r in rows.take(limit)) {
+            results.put(JSONObject().apply {
+                put("package", r.pkg)
+                put("name", r.name)
+                if (r.version.isNotBlank()) put("version", r.version)
+                put("installedAt", fmt.format(java.util.Date(r.installedAt)))
+                if (r.updatedAt > r.installedAt + 60_000) put("updatedAt", fmt.format(java.util.Date(r.updatedAt)))
+                if (r.system) put("system", true)
+            })
+        }
+        return JSONObject().put("count", results.length()).put("total", rows.size).put("packages", results)
     }
 
     // ── Cámara (captura headless con Camera2) ─────────────────────────────────

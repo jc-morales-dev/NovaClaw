@@ -20,6 +20,9 @@
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Ver TODAS las apps instaladas (targetSdk 30+ filtra el listado sin esto).
+         Permiso de instalación (no runtime); app sideloaded, sin políticas de Play. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
     <application
         android:allowBackup="false"
@@ -47,6 +50,15 @@
             android:name=".NovaClawService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Historial de desinstalaciones: FULLY_REMOVED es de los pocos broadcasts
+             implícitos que Android permite recibir en manifest (con la app cerrada). -->
+        <receiver android:name=".PackageRemovedReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PACKAGE_FULLY_REMOVED" />
+                <data android:scheme="package" />
+            </intent-filter>
+        </receiver>
 
         <!-- Fase 3: provider de Shizuku (control privilegiado del teléfono). -->
         <provider

@@ -193,6 +193,21 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     },
   },
   {
+    name: 'phone_packages',
+    description:
+      "List the phone's installed apps (APKs) or the history of UNINSTALLED apps. Use when the user asks what apps they have, what was installed/uninstalled recently, or to find a specific app. action='installed' lists apps newest-install first; action='uninstalled' shows the uninstall history (tracked since NovaClaw was installed); action='search' finds an app by name or package. Always available — no connector needed.",
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['installed', 'uninstalled', 'search'], description: 'What to list.' },
+        query: { type: 'string', description: 'Name or package to filter/search.' },
+        include_system: { type: 'boolean', description: 'Include pure system apps in the installed list (default false).' },
+        limit: { type: 'number', description: 'Max results (default 50).' },
+      },
+      required: ['action'],
+    },
+  },
+  {
     name: 'phone_calendar',
     description:
       "Read the user's upcoming calendar events for the next N days (title, date/time, location). Use when the user asks about their agenda, meetings or what they have coming up. Needs the Calendar connector.",
@@ -334,6 +349,7 @@ export const TOOL_NAME_TO_DOT: Record<string, string> = {
   phone_location: 'phone.location',
   phone_contacts: 'phone.contacts',
   phone_photo: 'phone.photo',
+  phone_packages: 'phone.packages',
   phone_calendar: 'phone.calendar',
   image_view: 'image.view',
   deep_research: 'deep.research',
