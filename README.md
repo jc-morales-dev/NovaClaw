@@ -6,6 +6,17 @@ phone-native equivalent of Claude Code / Codex. NovaClaw ships an embedded Linux
 run shell commands, read/edit files, browse your storage, see images, and use
 phone capabilities (camera, GPS, contacts, calendar) — all on-device, BYOK.
 
+<p align="center">
+  <img src="docs/media/novaclaw-demo.gif" alt="NovaClaw demo: the agent creates hello.js, verifies it and runs it with Node — entirely on the phone" width="360" />
+</p>
+
+<p align="center">
+  <em>Real footage on an OPPO CPH2557 (Android 15): the agent writes a file,
+  verifies it with <code>node --check</code> and runs it — all inside the
+  phone's embedded Linux. Full clip:
+  <a href="docs/media/novaclaw-demo.mp4">novaclaw-demo.mp4</a> (57 s).</em>
+</p>
+
 > **Status: working, signed APK, validated on real hardware** (OPPO CPH2557,
 > Android 15, arm64). Installable by sideload — not on Google Play. Ships at
 > `targetSdk 34`, running the embedded Linux under **proot** (bundled as a
