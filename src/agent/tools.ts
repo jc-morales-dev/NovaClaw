@@ -1,4 +1,4 @@
-import { exec as execCallback } from 'node:child_process';
+import { exec as execCallback, execFile as execFileCallback } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -23,6 +23,12 @@ import { performDeepResearch, buildResearchDigest } from './deepResearch';
 import { documentSymbols, findSymbol, referencesFor } from './lspManager';
 
 const exec = promisify(execCallback);
+// SIN shell: el binario recibe los argumentos tal cual, en un array. Se usa para
+// las herramientas que reciben una ruta elegida por el modelo — con `exec` la
+// ruta se interpolaba en una línea de shell y un archivo llamado
+// `informe$(comando).pdf` ejecutaba `comando` (la expansión ocurre antes incluso
+// de buscar el binario). Con execFile no hay línea de shell que expandir.
+const execFile = promisify(execFileCallback);
 
 async function runTerminalCommand(command: string, cwd: string): Promise<ToolExecutionResult> {
   const trimmed = command.trim();
@@ -351,7 +357,11 @@ export function createLocalToolExecutor(
 
     if (call.tool === 'file.extract') {
       const targetPath = resolveTargetPath(String(call.arguments.path ?? ''), context.cwd);
-      const shell = process.env.SHELL || undefined;
+      // Los conversores no deben arrancar dentro del workspace: algunos
+      // runtimes descubren módulos o configuración desde el cwd. La ruta del
+      // archivo ya es absoluta, así que un cwd del runtime es equivalente para
+      // el uso legítimo y no está bajo control del agente.
+      const trustedExecCwd = path.dirname(process.execPath);
       const MAX = 120 * 1024; // recorte para no reventar el contexto
       const ok = (output: string): ToolExecutionResult => ({
         name: 'file.extract', command: path.basename(targetPath), status: 'success',
@@ -367,9 +377,13 @@ export function createLocalToolExecutor(
       if (isProtectedPath(targetPath)) return err('Acceso denegado: ese archivo tiene secretos.');
 
       // 1) markitdown: convierte pdf/docx/xlsx/pptx/zip/html/csv/… a Markdown para IA.
-      for (const bin of ['markitdown', 'python3 -m markitdown']) {
+      // `-I` (isolated): Python NO agrega el directorio de trabajo a sys.path ni
+      // mira PYTHON* del entorno. Sin eso, un `markitdown.py` dejado en el
+      // workspace sombrea al módulo real y se ejecuta al extraer un archivo.
+      const candidatos: Array<[string, string[]]> = [['markitdown', []], ['python3', ['-I', '-m', 'markitdown']]];
+      for (const [bin, previos] of candidatos) {
         try {
-          const { stdout } = await exec(`${bin} "${targetPath}"`, { cwd: context.cwd, timeout: 180000, shell, maxBuffer: 48 * 1024 * 1024 });
+          const { stdout } = await execFile(bin, [...previos, targetPath], { cwd: trustedExecCwd, timeout: 180000, maxBuffer: 48 * 1024 * 1024 });
           const out = String(stdout ?? '').trim();
           if (out) return ok(out);
         } catch {
@@ -381,7 +395,7 @@ export function createLocalToolExecutor(
       const ext = path.extname(targetPath).toLowerCase();
       if (ext === '.pdf') {
         try {
-          const { stdout } = await exec(`pdftotext "${targetPath}" -`, { cwd: context.cwd, timeout: 120000, shell, maxBuffer: 48 * 1024 * 1024 });
+          const { stdout } = await execFile('pdftotext', [targetPath, '-'], { cwd: trustedExecCwd, timeout: 120000, maxBuffer: 48 * 1024 * 1024 });
           const out = String(stdout ?? '').trim();
           if (out) return ok(out);
         } catch { /* sin pdftotext */ }
@@ -389,7 +403,7 @@ export function createLocalToolExecutor(
       }
       if (['.zip'].includes(ext)) {
         try {
-          const { stdout } = await exec(`unzip -l "${targetPath}"`, { cwd: context.cwd, timeout: 60000, shell, maxBuffer: 8 * 1024 * 1024 });
+          const { stdout } = await execFile('unzip', ['-l', targetPath], { cwd: trustedExecCwd, timeout: 60000, maxBuffer: 8 * 1024 * 1024 });
           const out = String(stdout ?? '').trim();
           if (out) return ok(`Contenido del ZIP (usá terminal_run \`unzip\` para extraerlo y analizar los archivos):\n\n${out}`);
         } catch { /* sin unzip */ }

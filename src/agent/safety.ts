@@ -410,6 +410,21 @@ const CRITICAL_WORKSPACE_FILES = [
   'novaclaw.config.json',
 ];
 
+// Config que decide qué se EJECUTA después: hooks, servidores MCP y las configs
+// de linter/formateador, que en JS son código que el linter importa y corre.
+const EXECUTABLE_CONFIG_FILES = [
+  'novaclaw.hooks.json',
+  'novaclaw.mcp.json',
+  'novaclaw.config.json',
+];
+const EXECUTABLE_CONFIG_PREFIXES = ['eslint.config.', '.eslintrc', 'prettier.config.', 'vite.config.', 'jest.config.', 'vitest.config.'];
+
+function isExecutableConfigFile(targetPath: string): boolean {
+  const basename = basenamePath(targetPath).toLowerCase();
+  if (EXECUTABLE_CONFIG_FILES.includes(basename)) return true;
+  return EXECUTABLE_CONFIG_PREFIXES.some((prefix) => basename.startsWith(prefix));
+}
+
 function normalizePath(value: string): string {
   return normalizeComparablePath(value);
 }
@@ -448,12 +463,57 @@ export function classifyToolCall(call: ToolCallLike, context: SafetyContext): To
     const command = String(call.arguments.command ?? '').trim();
     const analysis = analyzeShellCommand(command);
 
+    // FRENO: toda ejecución de shell pide aprobación, sin excepción.
+    //
+    // La allowlist de abajo era evadible en dos pasos — escribir un script en el
+    // workspace (que no pide aprobación) y ejecutarlo con `node x.js`, que sí
+    // estaba permitido. Y aunque se tape ese caso, los binarios "de solo lectura"
+    // filtraban secretos igual: `printenv ZEN_API_KEY` imprime la API key del
+    // usuario, `cat /proc/self/environ` también. Mientras el agente ejecute a
+    // través de un shell heredado no podemos distinguir de verdad, así que no
+    // fingimos que podemos. El análisis se conserva para EXPLICAR el riesgo en el
+    // diálogo de aprobación, no para saltárselo.
     return {
-      requiresApproval: !analysis.safe,
+      requiresApproval: true,
+      mandatory: true,
       reason: analysis.safe
-        ? `Read-only or low-risk shell command (${analysis.detail}).`
+        ? `Shell command (${analysis.detail}). Every command needs approval: a shell can read secrets from the environment and run written files.`
         : `Sensitive or unverified shell command (${analysis.detail}). ` +
           'Default-deny policy: user approval is required before execution.',
+      summary: summarizeToolCall(call),
+    };
+  }
+
+  // mcp.add hace spawn(command, args) de lo que le pasen: es ejecución de código
+  // por otra puerta (y el hijo hereda el entorno del agente). No pasaba por
+  // ninguna política — caía en el "todo lo demás es seguro" del final.
+  if (call.tool === 'mcp.add') {
+    const command = String(call.arguments.command ?? '').trim();
+    const args = Array.isArray(call.arguments.args) ? call.arguments.args.map(String) : [];
+    const argv = [command, ...args];
+    const argvJson = JSON.stringify(argv);
+
+    return {
+      requiresApproval: true,
+      mandatory: true,
+      reason: `Installing an MCP server runs argv=${argvJson} on your phone. ` +
+        'With npx it also downloads it from the internet first. User approval is required.',
+      summary: `mcp.add ${String(call.arguments.name ?? '?')} → argv=${argvJson}`,
+    };
+  }
+
+  // Estas tres no ejecutan lo que les pidas, pero sí ejecutan lo que haya EN EL
+  // PROYECTO: eslint corre su config (que es JavaScript), `cargo check` compila
+  // build.rs, code.intel arranca el language server de node_modules, y
+  // `python -m markitdown` toma el módulo del cwd si alguien lo puso ahí. Como
+  // escribir esos archivos no pide aprobación, sin este gate vuelve a haber una
+  // cadena de dos pasos hacia ejecución arbitraria.
+  if (call.tool === 'diagnostics.check' || call.tool === 'code.intel' || call.tool === 'file.extract') {
+    return {
+      requiresApproval: true,
+      mandatory: true,
+      reason: `${call.tool} runs project-provided code (linter config, build scripts, language servers). ` +
+        'User approval is required.',
       summary: summarizeToolCall(call),
     };
   }
@@ -463,6 +523,18 @@ export function classifyToolCall(call: ToolCallLike, context: SafetyContext): To
     const outsideWorkspace = !isWithinWorkspace(targetPath, context.workspaceRoot);
     const criticalFile = isCriticalWorkspaceFile(targetPath, context.workspaceRoot);
     const requiresApproval = outsideWorkspace || criticalFile;
+
+    // Escribir configuración ejecutable es ejecución diferida: quien controla
+    // eslint.config.js o novaclaw.hooks.json decide qué corre en el próximo
+    // diagnóstico o en el próximo guardado. Ni /auto lo hace sin preguntar.
+    if (isExecutableConfigFile(targetPath)) {
+      return {
+        requiresApproval: true,
+        mandatory: true,
+        reason: 'Writing executable configuration (hooks, MCP servers, linter config) decides what runs later.',
+        summary: summarizeToolCall(call),
+      };
+    }
 
     return {
       requiresApproval,

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const { buildSkillsIndex } = await import('../src/server/skills.ts');
-const { hookMatches, substituteHookCommand, selectPostToolUseHooks, readHooksConfig, runPostToolUseHooks } =
+const { hookMatches, substituteHookCommand, hookEnv, selectPostToolUseHooks, readHooksConfig, runPostToolUseHooks } =
   await import('../src/server/hooks.ts');
 const { createLocalToolExecutor } = await import('../src/agent/tools.ts');
 
@@ -41,9 +41,16 @@ test('hookMatches: matcher regex sobre el nombre de tool', () => {
   assert.equal(hookMatches(undefined, 'cualquiera'), true, 'sin matcher aplica a todos');
 });
 
-test('substituteHookCommand: reemplaza $FILE / $FILE_PATH / $CWD', () => {
+test('substituteHookCommand: deja $FILE / $CWD para que los expanda el shell', () => {
+  // Ya no se interpola la ruta en el texto del comando: un archivo llamado
+  // `nota$(comando).js` ejecutaba el comando al guardar. Ahora van por el
+  // entorno (hookEnv) y el shell las expande como variables.
   const out = substituteHookCommand('fmt $FILE en $CWD', '/w/x.ts', '/w');
-  assert.equal(out, 'fmt /w/x.ts en /w');
+  assert.equal(out, process.platform === 'win32' ? 'fmt $env:FILE en $env:CWD' : 'fmt $FILE en $CWD');
+});
+
+test('hookEnv entrega la ruta y el cwd al shell como variables', () => {
+  assert.deepEqual(hookEnv('/w/x.ts', '/w'), { FILE: '/w/x.ts', FILE_PATH: '/w/x.ts', CWD: '/w' });
 });
 
 test('selectPostToolUseHooks filtra por matcher y descarta comandos vacíos', () => {

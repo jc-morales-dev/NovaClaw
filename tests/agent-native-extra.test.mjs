@@ -173,7 +173,9 @@ const noopExecutor = async (call) => ({
   const fakeModel = async () => {
     turn += 1;
     // El modelo insiste con la MISMA tool y args (loop típico de modelo débil).
-    if (turn <= 4) return { toolCalls: [{ id: 't' + turn, name: 'terminal_run', args: { command: 'ls' } }] };
+    // Se usa file_read y no terminal_run: todo shell se pausa pidiendo aprobación
+    // y nunca llegaría a ejecutarse. Acá lo que se prueba es el anti-loop.
+    if (turn <= 4) return { toolCalls: [{ id: 't' + turn, name: 'file_read', args: { path: 'a.txt' } }] };
     return { text: 'Listo.' };
   };
   let executorCalls = 0;

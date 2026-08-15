@@ -35,10 +35,11 @@ import {
 // Re-export para no cambiar la superficie pública del módulo.
 export { NATIVE_SYSTEM_PROMPT };
 
+type NativeTurnMode = 'plan' | 'build' | 'auto';
+
 export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
   const maxIterations = options.maxIterations ?? 32;
   const callModel = options.callModel ?? callModelWithTools;
-  let turnMode: 'plan' | 'build' | 'auto' = 'build';
 
   function dotName(nativeName: string): string {
     return TOOL_NAME_TO_DOT[nativeName] ?? nativeName;
@@ -176,7 +177,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
   }
 
   /** System prompt del turno: base + memoria persistente del proyecto si existe. */
-  async function buildSystemPrompt(): Promise<string> {
+  async function buildSystemPrompt(turnMode: NativeTurnMode): Promise<string> {
     let system = NATIVE_SYSTEM_PROMPT;
     try {
       const ctx = await options.getProjectContext?.();
@@ -256,10 +257,11 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     session: AgentSession,
     messages: AgentMessage[],
     events: AgentRuntimeEvent[],
+    turnMode: NativeTurnMode,
     signal?: AbortSignal,
   ): Promise<RuntimeResult> {
     try {
-      return await runLoopInner(session, messages, events, signal);
+      return await runLoopInner(session, messages, events, turnMode, signal);
     } finally {
       flushUsage(session);
     }
@@ -269,10 +271,11 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     session: AgentSession,
     messages: AgentMessage[],
     events: AgentRuntimeEvent[],
+    turnMode: NativeTurnMode,
     signal?: AbortSignal,
   ): Promise<RuntimeResult> {
     const cfg = options.getConfig();
-    const system = await buildSystemPrompt();
+    const system = await buildSystemPrompt(turnMode);
 
     for (let i = 0; i < maxIterations; i += 1) {
       // El usuario tocó Detener: cortamos limpio (el historial es texto plano,
@@ -352,7 +355,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
       // reenviando esa cháchara en cada vuelta.
       messages.push({ role: 'assistant', text: reply.text, toolCalls: reply.toolCalls, rawContent: reply.rawContent });
 
-      const resumed = await runToolBatch(session, messages, reply.toolCalls, 0, events, signal);
+      const resumed = await runToolBatch(session, messages, reply.toolCalls, 0, events, turnMode, signal);
       if (resumed === 'paused') return { events }; // esperando aprobación
       if (resumed === 'aborted') {
         events.push({ type: 'message', message: '⏹️ Respuesta detenida.' });
@@ -374,6 +377,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     batch: Array<{ id: string; name: string; args: Record<string, any> }>,
     startIndex: number,
     events: AgentRuntimeEvent[],
+    turnMode: NativeTurnMode,
     signal?: AbortSignal,
   ): Promise<'paused' | 'done' | 'aborted'> {
     let i = startIndex;
@@ -533,12 +537,14 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
       });
 
       // Auto = omitir permisos; o si el usuario ya aprobó "siempre" esta tool.
+      // Excepción innegociable: las decisiones mandatory (ejecución de código)
+      // preguntan siempre, aunque el usuario esté en auto o haya dicho "siempre".
       const needsApproval = decision.requiresApproval
-        && turnMode !== 'auto'
-        && !(session.autoApproveTools ?? []).includes(call.tool);
+        && (decision.mandatory
+          || (turnMode !== 'auto' && !(session.autoApproveTools ?? []).includes(call.tool)));
       if (needsApproval) {
         session.pendingApproval = { toolCall: call, summary: decision.summary, reason: decision.reason };
-        (session as any).native = { messages, batch, nextIndex: i } as NativeResume;
+        (session as any).native = { messages, batch, nextIndex: i, mode: turnMode } as NativeResume;
         events.push({ type: 'approval', approval: session.pendingApproval });
         return 'paused';
       }
@@ -612,7 +618,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     mode?: 'plan' | 'build' | 'auto',
     images?: AgentImage[],
   ): Promise<RuntimeResult> {
-    turnMode = mode === 'plan' ? 'plan' : mode === 'auto' ? 'auto' : 'build';
+    const turnMode: NativeTurnMode = mode === 'plan' ? 'plan' : mode === 'auto' ? 'auto' : 'build';
     loopGuard = new Map(); // el anti-loop se cuenta por turno
     pendingVerify = false; // la verificación obligatoria también es por turno
     verifyNudged = false;
@@ -628,7 +634,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
         if (messages[i].role === 'user') { messages[i].images = images; break; }
       }
     }
-    return runLoop(session, messages, trackedEvents(onEvent), signal);
+    return runLoop(session, messages, trackedEvents(onEvent), turnMode, signal);
   }
 
   async function resolveApproval(
@@ -655,7 +661,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
         session.autoApproveTools.push(pending.toolCall.tool);
       }
     }
-    const { messages, batch, nextIndex } = resume;
+    const { messages, batch, nextIndex, mode: turnMode } = resume;
     const tc = batch[nextIndex];
 
     if (!approved) {
@@ -677,7 +683,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
     }
 
     // Continuar con el resto del lote y luego seguir el loop del modelo.
-    const rest = await runToolBatch(session, messages, batch, nextIndex + 1, events, signal);
+    const rest = await runToolBatch(session, messages, batch, nextIndex + 1, events, turnMode, signal);
     // El lote puede haber corrido subagentes (consumen modelo): contabilizarlos
     // aunque el turno quede pausado/detenido y no pase por runLoop.
     if (rest === 'paused') { flushUsage(session); return { events }; }
@@ -686,7 +692,7 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
       flushUsage(session);
       return { events };
     }
-    return runLoop(session, messages, events, signal);
+    return runLoop(session, messages, events, turnMode, signal);
   }
 
   return { runUserTurn, resolveApproval };

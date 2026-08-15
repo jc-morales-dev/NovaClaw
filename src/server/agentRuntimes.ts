@@ -9,7 +9,6 @@ import { runtimeState } from './state';
 import { mcpManager, readMcpConfig, reconnectMcp, writeMcpConfig } from './mcpRegistry';
 import { callZenAgent } from './localFallback';
 import { buildSkillsIndex } from './skills';
-import { runPostToolUseHooks } from './hooks';
 
 // Journal de cambios de archivo para "Deshacer" (los últimos N escritos/editados).
 const changeJournal: FileChange[] = [];
@@ -19,9 +18,10 @@ export const sharedExecutor = createLocalToolExecutor({
     changeJournal.push(c);
     if (changeJournal.length > 200) changeJournal.shift();
   },
-  // B7 hooks PostToolUse: tras editar, corre lo que haya en novaclaw.hooks.json
-  // (formatear/lint) y le devuelve la salida al agente.
-  onAfterMutation: ({ tool, path: filePath, cwd }) => runPostToolUseHooks(tool, filePath, cwd),
+  // Hotfix de seguridad: los hooks automáticos quedan desconectados hasta que
+  // exista un flujo de confianza/aprobación por workspace. Un repo clonado puede
+  // traer novaclaw.hooks.json ya creado; aprobar solo su escritura no protege ese
+  // caso y cualquier file.write dispararía shell sin mostrar el comando.
   // Deja que el AGENTE instale/quite servidores MCP ("instalá el MCP de X").
   mcp: {
     list: () => ({

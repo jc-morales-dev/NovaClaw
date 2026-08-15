@@ -20,6 +20,10 @@ export type ToolApprovalDecision = {
   requiresApproval: boolean;
   reason: string;
   summary: string;
+  /** Aprobación que NO se puede saltar: ni con el modo auto ni con un "permitir
+   *  siempre" previo. Se reserva para las tools que ejecutan código (terminal.run,
+   *  mcp.add): un solo sí a ciegas ahí vale por acceso total al teléfono. */
+  mandatory?: boolean;
 };
 
 export type ToolExecutionResult = {

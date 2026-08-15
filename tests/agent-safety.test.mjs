@@ -3,11 +3,15 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-const { classifyToolCall } = await import('../src/agent/safety.ts');
+const { classifyToolCall, analyzeShellCommand } = await import('../src/agent/safety.ts');
 const { createLocalToolExecutor } = await import('../src/agent/tools.ts');
 
 const workspaceRoot = '/workspace/project';
 
+// Desde el freno de emergencia, hasta `ls` pide aprobación: un shell heredado
+// puede leer secretos del entorno y ejecutar archivos ya escritos, así que no
+// distinguimos por comando. El análisis sobrevive para explicar el riesgo en el
+// diálogo. Detalle fino del gate en agent-approval-gate.test.mjs.
 const safeShell = classifyToolCall(
   {
     tool: 'terminal.run',
@@ -15,7 +19,9 @@ const safeShell = classifyToolCall(
   },
   { cwd: workspaceRoot, workspaceRoot },
 );
-assert.equal(safeShell.requiresApproval, false);
+assert.equal(safeShell.requiresApproval, true);
+assert.equal(safeShell.mandatory, true);
+assert.doesNotMatch(safeShell.reason, /sensitive/i, 'un comando de lectura no se anuncia como peligroso');
 
 const destructiveShell = classifyToolCall(
   {
@@ -117,26 +123,40 @@ assert.match(outsideWorkspaceWrite.summary, /file\.write/i);
 }
 
 // ── Bypasses de la lista negra ahora bloqueados (H2) ─────────────────────────
+//
+// OJO con lo que prueba este bloque y los siguientes: desde el freno de
+// emergencia, classifyToolCall devuelve `true` para CUALQUIER terminal.run, así
+// que preguntarle a él por estos comandos pasaría aunque el analizador estuviera
+// roto. Los casos de abajo van contra analyzeShellCommand, que es quien de
+// verdad clasifica y quien volverá a decidir cuando se reconstruya la allowlist
+// estructurada. La política vive en agent-approval-gate.test.mjs.
 {
-  const mustApprove = (command) =>
-    classifyToolCall({ tool: 'terminal.run', arguments: { command } }, { cwd: workspaceRoot, workspaceRoot }).requiresApproval;
+  const inseguro = (command) => !analyzeShellCommand(command).safe;
 
-  assert.equal(mustApprove('python3 -c "import shutil; shutil.rmtree(\'/sdcard/DCIM\')"'), true, 'python -c');
-  assert.equal(mustApprove('node -e "require(\'fs\').rmSync(\'/x\',{recursive:true})"'), true, 'node -e');
-  assert.equal(mustApprove('find /sdcard -type f -delete'), true, 'find -delete');
-  assert.equal(mustApprove('echo pwned > /sdcard/Download/nota.txt'), true, 'redirección a /sdcard');
-  assert.equal(mustApprove('truncate -s 0 /sdcard/x'), true, 'truncate');
-  assert.equal(mustApprove('pm uninstall com.whatsapp'), true, 'pm uninstall');
-  // Comandos legítimos de lectura siguen sin pedir aprobación.
-  assert.equal(mustApprove('python3 script.py'), false, 'python script normal');
-  assert.equal(mustApprove('node index.js'), false, 'node script normal');
-  assert.equal(mustApprove('cat archivo.txt'), false, 'cat normal');
+  assert.equal(inseguro('python3 -c "import shutil; shutil.rmtree(\'/sdcard/DCIM\')"'), true, 'python -c');
+  assert.equal(inseguro('node -e "require(\'fs\').rmSync(\'/x\',{recursive:true})"'), true, 'node -e');
+  assert.equal(inseguro('find /sdcard -type f -delete'), true, 'find -delete');
+  assert.equal(inseguro('echo pwned > /sdcard/Download/nota.txt'), true, 'redirección a /sdcard');
+  assert.equal(inseguro('truncate -s 0 /sdcard/x'), true, 'truncate');
+  assert.equal(inseguro('pm uninstall com.whatsapp'), true, 'pm uninstall');
+  assert.equal(inseguro('cat archivo.txt'), false, 'cat normal');
+
+  // Estos DOS eran el agujero: el analizador los sigue viendo "seguros" porque
+  // no puede saber qué hay dentro del script. Escribir el archivo tampoco pedía
+  // aprobación, así que file.write + terminal.run daba ejecución arbitraria. Por
+  // eso el freno es global y no una excepción más en la lista.
+  assert.equal(inseguro('python3 script.py'), false, 'el analizador no ve dentro del script');
+  assert.equal(inseguro('node index.js'), false, 'el analizador no ve dentro del script');
+  const gate = (command) =>
+    classifyToolCall({ tool: 'terminal.run', arguments: { command } }, { cwd: workspaceRoot, workspaceRoot });
+  assert.equal(gate('python3 script.py').requiresApproval, true, 'pero la política los frena');
+  assert.equal(gate('node index.js').requiresApproval, true, 'pero la política los frena');
 }
 
 // ── Modelo ALLOWLIST (default-deny): bypasses que la blacklist dejaba pasar ──
 {
-  const mustApprove = (command) =>
-    classifyToolCall({ tool: 'terminal.run', arguments: { command } }, { cwd: workspaceRoot, workspaceRoot }).requiresApproval;
+  // Contra el analizador, no contra la política: ver la nota del bloque anterior.
+  const mustApprove = (command) => !analyzeShellCommand(command).safe;
 
   // Bypasses clásicos de blacklist: binarios no listados → SIEMPRE aprobación.
   assert.equal(mustApprove('busybox rm -rf /sdcard/DCIM'), true, 'busybox rm');

@@ -67,12 +67,15 @@ test('code.intel find sin query → error', async () => {
   assert.match(r.output, /query/i);
 });
 
-test('code_intel registrado: schema + mapeo + read-only', () => {
+test('code_intel registrado: schema + mapeo, y FUERA del fast-path', () => {
   const schema = TOOL_SCHEMAS.find((t) => t.name === 'code_intel');
   assert.ok(schema, 'falta el schema code_intel');
   assert.deepEqual(schema.parameters.required, ['action']);
   assert.equal(TOOL_NAME_TO_DOT.code_intel, 'code.intel');
-  assert.ok(READ_ONLY_TOOLS.has('code_intel'));
+  // Ya no es read-only: arranca el language server de node_modules del proyecto,
+  // o sea que ejecuta código del workspace. El fast-path no consulta la política
+  // de aprobación, así que estar ahí equivalía a saltársela.
+  assert.equal(READ_ONLY_TOOLS.has('code_intel'), false);
 });
 
 console.log('agent-lsp.test.mjs passed');

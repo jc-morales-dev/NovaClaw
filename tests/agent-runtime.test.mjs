@@ -27,10 +27,15 @@ await fs.mkdir(externalRoot, { recursive: true });
   const session = createAgentSession('safe-session', workspaceRoot);
   const result = await runtime.runUserTurn(session, 'tell me where I am');
 
-  assert.equal(result.events[0].type, 'toolExecution');
-  assert.equal(result.events[0].toolExecution.name, 'terminal.run');
-  assert.match(result.events[0].toolExecution.output, /claw-agent-workspace/i);
-  assert.deepEqual(result.events[1], {
+  // Todo comando de shell se detiene a pedir aprobación, incluso `pwd`.
+  assert.equal(result.events[0].type, 'approval');
+  assert.equal(session.pendingApproval?.toolCall.tool, 'terminal.run');
+
+  const resumed = await runtime.resolveApproval(session, true);
+  assert.equal(resumed.events[0].type, 'toolExecution');
+  assert.equal(resumed.events[0].toolExecution.name, 'terminal.run');
+  assert.match(resumed.events[0].toolExecution.output, /claw-agent-workspace/i);
+  assert.deepEqual(resumed.events[1], {
     type: 'message',
     message: 'I inspected the current directory.',
   });
@@ -148,6 +153,67 @@ await fs.mkdir(externalRoot, { recursive: true });
 
   const exists = await fs.access(targetPath).then(() => true, () => false);
   assert.equal(exists, false, 'File should NOT exist after rejection');
+}
+
+{
+  // Plan no depende de que el modelo obedezca el prompt: el runtime legacy
+  // bloquea la mutación antes de llegar al executor.
+  let executorCalls = 0;
+  const scriptedResponses = [
+    JSON.stringify({ kind: 'tool_call', tool: 'file.write', arguments: { path: 'plan.txt', content: 'no' } }),
+    '{"kind":"message","message":"Solo propongo el cambio."}',
+  ];
+  const runtime = createAgentRuntime({
+    workspaceRoot,
+    callModel: async () => scriptedResponses.shift() ?? '{"kind":"message","message":"fin"}',
+    executeToolCall: async () => {
+      executorCalls += 1;
+      throw new Error('Plan no debe invocar el executor para mutaciones');
+    },
+  });
+  const session = createAgentSession('plan-legacy', workspaceRoot);
+  const result = await runtime.runUserTurn(session, 'solo planificá', undefined, undefined, 'plan');
+  assert.equal(executorCalls, 0);
+  assert.equal(result.events[0].type, 'toolExecution');
+  assert.match(result.events[0].toolExecution.output, /PLAN MODE/);
+  assert.equal(result.events.at(-1).type, 'message');
+}
+
+{
+  // Regresión de carrera: el runtime es singleton. Un turno Auto concurrente no
+  // puede sobrescribir el modo de un turno Plan que está esperando al modelo.
+  let releasePlan;
+  let signalPlanEntered;
+  const planEntered = new Promise((resolve) => { signalPlanEntered = resolve; });
+  const planGate = new Promise((resolve) => { releasePlan = resolve; });
+  let modelCalls = 0;
+  const executed = [];
+  const runtime = createAgentRuntime({
+    workspaceRoot,
+    callModel: async () => {
+      modelCalls += 1;
+      if (modelCalls === 1) {
+        signalPlanEntered();
+        await planGate;
+        return JSON.stringify({ kind: 'tool_call', tool: 'file.write', arguments: { path: 'race.txt', content: 'no' } });
+      }
+      if (modelCalls === 2) return '{"kind":"message","message":"auto terminó"}';
+      return '{"kind":"message","message":"plan terminó"}';
+    },
+    executeToolCall: async (call) => {
+      executed.push(call.tool);
+      return { name: call.tool, command: '', status: 'success', output: 'ejecutado', cwd: workspaceRoot };
+    },
+  });
+  const planSession = createAgentSession('plan-race', workspaceRoot);
+  const autoSession = createAgentSession('auto-race', workspaceRoot);
+  const planPromise = runtime.runUserTurn(planSession, 'planificá', undefined, undefined, 'plan');
+  await planEntered;
+  await runtime.runUserTurn(autoSession, 'hacé', undefined, undefined, 'auto');
+  releasePlan();
+  const planResult = await planPromise;
+  assert.deepEqual(executed, [], 'Auto concurrente no cambia el modo inmutable del turno Plan');
+  assert.match(planResult.events[0].toolExecution.output, /PLAN MODE/);
 }
 
 console.log('agent-runtime.test.mjs passed');

@@ -16,8 +16,13 @@ export function isMcpToolName(name: string): boolean {
 
 // Tools de solo-lectura (nombres nativos, guion_bajo): no mutan estado ni cwd,
 // así que varias seguidas en un turno se pueden ejecutar EN PARALELO.
+// Tools que se pueden correr EN PARALELO sin pasar por la política de aprobación.
+// Ojo al agregar acá: este camino usa executeOnly, que NO consulta
+// classifyToolCall — una tool con aprobación obligatoria metida en esta lista se
+// ejecutaría igual. Por eso salieron file_extract y code_intel: ejecutan código
+// del proyecto (config de linter, language server) y ahora exigen aprobación.
 export const READ_ONLY_TOOLS = new Set([
-  'file_read', 'file_grep', 'file_list', 'file_search', 'file_extract', 'code_intel',
+  'file_read', 'file_grep', 'file_list', 'file_search',
   'deep_research', 'web_search', 'web_fetch', 'phone_location', 'phone_contacts', 'image_view',
 ]);
 
@@ -36,9 +41,16 @@ export function isCodeFile(p: string): boolean {
 export const VERIFY_CMD = /\b(tsc|node|python3?|npm|pnpm|yarn|deno|bun|go|cargo|pytest|ruff|eslint|jest|vitest|mocha|make|test|build|--check|--noEmit)\b/i;
 
 // En modo PLAN, estas tools quedan bloqueadas (el agente solo lee/analiza).
-const PLAN_BLOCKED_TOOLS = new Set(['file_write', 'file_edit', 'file_edit_multi', 'workspace_mkdir', 'terminal_run', 'subagent_run']);
+// mcp_add/mcp_remove entran acá porque instalar un servidor MCP arranca un
+// proceso (npx descarga y ejecuta): eso no es "planificar", es actuar.
+const PLAN_BLOCKED_TOOLS = new Set([
+  'file_write', 'file_edit', 'file_edit_multi', 'workspace_mkdir', 'terminal_run', 'subagent_run',
+  'mcp_add', 'mcp_remove', 'diagnostics_check', 'code_intel', 'file_extract',
+]);
 export function isPlanBlocked(name: string): boolean {
-  return PLAN_BLOCKED_TOOLS.has(name) || isMcpToolName(name);
+  // El runtime nativo usa file_write y el legacy file.write.
+  const normalized = String(name).replaceAll('.', '_');
+  return PLAN_BLOCKED_TOOLS.has(normalized) || isMcpToolName(name);
 }
 
 // Umbrales de compactación inteligente (resumen por el modelo).
@@ -79,6 +91,7 @@ export interface NativeResume {
   messages: AgentMessage[];
   batch: Array<{ id: string; name: string; args: Record<string, any> }>;
   nextIndex: number;
+  mode: 'plan' | 'build' | 'auto';
 }
 
 export function toolResultToHistory(result: ToolExecutionResult): string {

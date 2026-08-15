@@ -1,5 +1,6 @@
 import { classifyToolCall } from './safety';
 import { extractModelAction, tryParseJson, validateAction } from './modelAction';
+import { isPlanBlocked } from './nativeAgentSupport';
 import type { ToolCallLike, ToolExecutionResult } from './types';
 
 type HistoryEntry = {
@@ -11,6 +12,7 @@ type PendingApproval = {
   toolCall: ToolCallLike;
   summary: string;
   reason: string;
+  mode?: AgentMode;
 };
 
 /** Modos del chat: plan (solo lee/propone), build (pide permiso para lo
@@ -257,7 +259,6 @@ export function createAgentRuntime(options: RuntimeOptions) {
   }));
   const maxIterations = options.maxIterations ?? 10;
   const maxParseRetries = options.maxParseRetries ?? 2;
-  let turnMode: AgentMode = 'build';
 
   async function callModelWithRepair(session: AgentSession): Promise<import('./types').AgentModelAction> {
     // Compact the running history before every model call so long sessions stay bounded.
@@ -294,7 +295,11 @@ export function createAgentRuntime(options: RuntimeOptions) {
     return { kind: 'message', message: 'Unable to get a valid response from the model.' };
   }
 
-  async function continueLoop(session: AgentSession, events: AgentRuntimeEvent[] = []): Promise<RuntimeResult> {
+  async function continueLoop(
+    session: AgentSession,
+    events: AgentRuntimeEvent[] = [],
+    turnMode: AgentMode = 'build',
+  ): Promise<RuntimeResult> {
     for (let i = 0; i < maxIterations; i += 1) {
       const action = await callModelWithRepair(session);
 
@@ -304,20 +309,41 @@ export function createAgentRuntime(options: RuntimeOptions) {
         return { events };
       }
 
+      // El runtime legacy también debe cumplir Plan de forma estructural. El
+      // prompt no es una barrera: si el modelo intenta mutar o ejecutar, se
+      // devuelve un resultado bloqueado y el executor nunca se invoca.
+      if (turnMode === 'plan' && isPlanBlocked(action.tool)) {
+        const blocked: ToolExecutionResult = {
+          name: action.tool,
+          command: JSON.stringify(action.arguments ?? {}).slice(0, 120),
+          status: 'error',
+          output: 'PLAN MODE: editar archivos, ejecutar comandos y MCP están bloqueados. Terminá el plan y aplicalo en modo Build.',
+          cwd: session.cwd,
+        };
+        session.history.push({ role: 'assistant', content: JSON.stringify(action) });
+        session.history.push({ role: 'system', content: toolResultToHistory(blocked) });
+        events.push({ type: 'toolExecution', toolExecution: blocked });
+        continue;
+      }
+
       const decision = classifyToolCall(action, {
         cwd: session.cwd,
         workspaceRoot: session.workspaceRoot,
       });
 
       // Auto = omitir permisos; o si el usuario ya aprobó "siempre" esta tool.
+      // Auto y "permitir siempre" saltan la aprobación… salvo las decisiones
+      // marcadas mandatory (ejecución de código): ahí un sí a ciegas vale por
+      // acceso total al teléfono, así que se pregunta igual, todas las veces.
       const needsApproval = decision.requiresApproval
-        && turnMode !== 'auto'
-        && !(session.autoApproveTools ?? []).includes(action.tool);
+        && (decision.mandatory
+          || (turnMode !== 'auto' && !(session.autoApproveTools ?? []).includes(action.tool)));
       if (needsApproval) {
         session.pendingApproval = {
           toolCall: action,
           summary: decision.summary,
           reason: decision.reason,
+          mode: turnMode,
         };
 
         events.push({
@@ -367,9 +393,9 @@ export function createAgentRuntime(options: RuntimeOptions) {
     mode?: AgentMode,
     _images?: Array<{ mediaType: string; data: string; kind?: 'image' | 'audio' | 'video' }>, // visión no soportada en el runtime legacy (sin API key)
   ): Promise<RuntimeResult> {
-    turnMode = mode ?? 'build';
+    const turnMode = mode ?? 'build';
     session.history.push({ role: 'user', content: message });
-    return continueLoop(session, trackedEvents(onEvent));
+    return continueLoop(session, trackedEvents(onEvent), turnMode);
   }
 
   async function resolveApproval(
@@ -390,6 +416,7 @@ export function createAgentRuntime(options: RuntimeOptions) {
     }
 
     const pendingApproval = session.pendingApproval;
+    const turnMode = pendingApproval.mode ?? 'build';
     session.pendingApproval = null;
 
     // "Siempre en este chat": recordamos la tool para no volver a preguntar.
@@ -405,7 +432,7 @@ export function createAgentRuntime(options: RuntimeOptions) {
         role: 'system',
         content: `User rejected tool call: ${pendingApproval.summary}`,
       });
-      return continueLoop(session, events);
+      return continueLoop(session, events, turnMode);
     }
 
     session.history.push({
@@ -431,7 +458,7 @@ export function createAgentRuntime(options: RuntimeOptions) {
       type: 'toolExecution',
       toolExecution: toolResult,
     });
-    return continueLoop(session, events);
+    return continueLoop(session, events, turnMode);
   }
 
   return {

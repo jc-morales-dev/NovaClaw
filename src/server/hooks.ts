@@ -1,17 +1,17 @@
 /**
- * Hooks PostToolUse (B7) — al estilo Claude Code. Tras una mutación exitosa
- * (file.write / file.edit / file.edit_multi) el agente corre los comandos
- * configurados (formatear, lint, etc.) y su salida se le devuelve, así el
- * formateo/chequeo pasa SIN que el modelo tenga que acordarse.
+ * Hooks PostToolUse (B7) — al estilo Claude Code. El runner se conserva para
+ * uso explícito y tests, pero el servidor NO lo conecta automáticamente a las
+ * mutaciones mientras no exista confianza/aprobación por workspace. Un repo
+ * clonado puede traer esta configuración ya escrita.
  *
  * Config en `novaclaw.hooks.json` (formato estilo Claude Code):
  *   { "PostToolUse": [ { "matcher": "file.edit|file.write",
  *                        "command": "prettier --write $FILE",
  *                        "description": "Formatear" } ] }
  *
- * Seguridad: escribir novaclaw.hooks.json exige aprobación del usuario (está en
- * la lista de archivos críticos de safety.ts), así el agente no puede
- * auto-instalar un hook malicioso en silencio.
+ * Seguridad: escribir novaclaw.hooks.json exige aprobación obligatoria. Eso no
+ * vuelve confiable un archivo preexistente; por eso la ejecución automática está
+ * deshabilitada en agentRuntimes.ts.
  */
 import { exec as execCb } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -48,12 +48,32 @@ export function hookMatches(matcher: string | undefined, tool: string): boolean 
   }
 }
 
-/** Sustituye $FILE / $FILE_PATH / $CWD en el comando del hook. */
-export function substituteHookCommand(command: string, filePath: string, cwd: string): string {
+/**
+ * Variables que el shell expande al correr el hook.
+ *
+ * Antes la ruta se metía como TEXTO dentro del comando (`fmt $FILE` →
+ * `fmt /w/x.ts`). Con un archivo llamado `nota$(comando).js` eso ejecutaba
+ * `comando` al guardar — y la ruta la elige el agente. Pasándola por el entorno,
+ * `$FILE` la expande el shell desde una variable, y el contenido de una variable
+ * NO se re-evalúa para sustitución de comandos: el peor caso es word splitting
+ * si el usuario no la entrecomilla.
+ */
+export function hookEnv(filePath: string, cwd: string): Record<string, string> {
+  return { FILE: filePath, FILE_PATH: filePath, CWD: cwd };
+}
+
+/**
+ * Normaliza el comando del hook. Ya NO inserta la ruta: los `$FILE`/`$FILE_PATH`/
+ * `$CWD` quedan literales para que los expanda el shell desde el entorno.
+ */
+export function substituteHookCommand(command: string, _filePath?: string, _cwd?: string): string {
+  if (process.platform !== 'win32') return command;
+  // En Windows ejecutamos los hooks explícitos con PowerShell: conserva la
+  // sintaxis documentada `$FILE` sin interpolar el valor dentro del comando.
   return command
-    .replace(/\$FILE_PATH\b/g, filePath)
-    .replace(/\$FILE\b/g, filePath)
-    .replace(/\$CWD\b/g, cwd);
+    .replace(/\$FILE_PATH\b/g, '$env:FILE_PATH')
+    .replace(/\$FILE\b/g, '$env:FILE')
+    .replace(/\$CWD\b/g, '$env:CWD');
 }
 
 /** Devuelve los hooks PostToolUse que aplican a este tool (puro, testeable). */
@@ -76,10 +96,16 @@ export async function runPostToolUseHooks(
 
   const lines: string[] = [];
   for (const h of matching) {
-    const cmd = substituteHookCommand(h.command, filePath, cwd);
+    const cmd = substituteHookCommand(h.command);
     const label = h.description || cmd;
     try {
-      const { stdout, stderr } = await exec(cmd, { cwd, timeout: HOOK_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
+      const { stdout, stderr } = await exec(cmd, {
+        cwd,
+        shell: process.platform === 'win32' ? 'powershell.exe' : undefined,
+        timeout: HOOK_TIMEOUT_MS,
+        maxBuffer: 1024 * 1024,
+        env: { ...process.env, ...hookEnv(filePath, cwd) },
+      });
       const out = `${stdout ?? ''}${stderr ?? ''}`.trim();
       lines.push(`hook ✓ ${label}${out ? `: ${out.slice(0, 400)}` : ''}`);
     } catch (error: any) {
