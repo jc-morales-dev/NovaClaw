@@ -4,6 +4,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import type { ToolCallLike, ToolExecutionResult } from './types';
+import { sanitizeChildEnv } from './childEnv';
 import { runDiagnostics } from './diagnostics';
 import {
   MAX_READ_BYTES,
@@ -93,7 +94,14 @@ async function runTerminalCommand(command: string, cwd: string): Promise<ToolExe
   try {
     // En Android, SHELL apunta al sh del Linux embebido ($PREFIX/bin/sh).
     // En la PC (dev) queda undefined y exec usa el shell por defecto del SO.
-    const { stdout, stderr } = await exec(command, { cwd, timeout: 15000, shell: process.env.SHELL || undefined });
+    // env saneado: el comando corre con el entorno del agente MENOS las
+    // credenciales. Aprobar un comando no puede costarle la API key al usuario.
+    const { stdout, stderr } = await exec(command, {
+      cwd,
+      timeout: 15000,
+      shell: process.env.SHELL || undefined,
+      env: sanitizeChildEnv(process.env),
+    });
     return {
       name: 'terminal.run',
       command,

@@ -14,6 +14,8 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+import { sanitizeChildEnv } from './childEnv';
+
 const MARKER = path.join(os.homedir() || '/root', '.novaclaw', 'lsp-ready');
 const INSTALL_CMD = 'npm i -g typescript-language-server@4.3.3 typescript@5';
 
@@ -49,7 +51,7 @@ export function ensureLspInstalled(): void {
   console.log('[LSP] Instalando language server para code_intel en segundo plano…');
   try {
     const child = spawn(process.env.SHELL || 'sh', ['-c', INSTALL_CMD], {
-      detached: true, stdio: 'ignore', env: process.env,
+      detached: true, stdio: 'ignore', env: sanitizeChildEnv(process.env),
     });
     child.on('exit', (code) => {
       if (code === 0) {

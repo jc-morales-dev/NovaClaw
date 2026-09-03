@@ -1,6 +1,7 @@
 import { exec as execCallback, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import { sanitizeChildEnv } from '../agent/childEnv';
 import { DEFAULT_CWD } from './config';
 import { runtimeState } from './state';
 
@@ -100,7 +101,7 @@ export async function startOpenCodeInstall() {
   const command = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   opencodeInstallProcess = spawn(command, ['install', '-g', 'opencode-ai'], {
     cwd: DEFAULT_CWD,
-    env: process.env,
+    env: sanitizeChildEnv(process.env),
   });
 
   opencodeInstallProcess.stdout.on('data', (chunk) => {
@@ -149,7 +150,7 @@ export async function startOpenCodeRuntime() {
 
   opencodeRuntimeProcess = spawn(binaryPath, [], {
     cwd: DEFAULT_CWD,
-    env: process.env,
+    env: sanitizeChildEnv(process.env),
   });
 
   opencodeRuntimeProcess.stdout.on('data', (chunk) => {

@@ -53,7 +53,7 @@ phone capabilities (camera, GPS, contacts, calendar) — all on-device, BYOK.
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
-│  APK (android-native/, targetSdk 28, arm64)                   │
+│  APK (android-native/, targetSdk 34, arm64)                   │
 │                                                               │
 │  MainActivity ─ loads WebView → http://127.0.0.1:8088         │
 │  NovaClawService (foreground) ─ owns the Node agent process   │
@@ -88,13 +88,23 @@ The agent can run arbitrary code and touch the phone, so it is locked down:
 - **Token auth.** A random per-install token (`TokenStore`) is required on every
   `/api/*` call, on the `/pty` WebSocket, and on the native tools server. The
   agent injects it into the served HTML; other apps on the phone don't have it.
-- **Approval gate** (`src/agent/safety.ts`) with an **allowlist (default-deny)**
-  model: a shell command runs unattended only if every segment of the pipeline
-  starts with a verified read-only/low-risk binary and the line has no command
-  substitution, write redirection, or injection env vars. Anything else —
-  deletes, installs, unrecognized binaries, `busybox rm`, `cp /dev/null`,
-  `python -c`, chained `&&`/`;`/`|` with an unsafe segment — pauses for
-  accept/reject. Same gate for writes outside the workspace or to critical files.
+- **Approval gate** (`src/agent/safety.ts`): **every shell command requires
+  explicit approval.** There is no unattended path. An earlier allowlist model
+  was bypassable in two steps — the agent writes a script with `file_write`
+  (no approval needed) and runs it with an allowlisted `node` — and even genuine
+  read-only binaries leak secrets (`printenv ZEN_API_KEY`,
+  `cat /proc/self/environ`). While the agent runs through an inherited shell we
+  can't really tell the difference, so we don't pretend to. The command analysis
+  is kept to *explain* the risk in the approval dialog, never to skip it.
+  Installing an MCP server (`mcp.add`) is code execution through another door and
+  goes through the same gate. Writes outside the workspace or to critical files
+  also require approval.
+- **Secrets never reach child processes.** The user's API key and the app↔agent
+  token live in the agent's own environment, but every process the agent spawns —
+  shell commands, the PTY, `PostToolUse` hooks, MCP servers, LSP installs — gets
+  a sanitized copy with credentials stripped (`src/agent/childEnv.ts`). Approving
+  one command cannot cost you your key. A test walks the source tree and fails
+  the build if any new spawn point inherits the raw environment.
 - **Secret protection.** `file_read`/`file_grep` refuse to read files holding
   secrets (`novaclaw.config.json`, `*.jks`, …). `web_fetch` blocks loopback and
   private IP ranges (SSRF protection).

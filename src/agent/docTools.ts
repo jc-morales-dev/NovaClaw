@@ -17,6 +17,8 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+import { sanitizeChildEnv } from './childEnv';
+
 const MARKER = path.join(os.homedir() || '/root', '.novaclaw', 'doctools-ready');
 
 const SCRIPT = [
@@ -57,7 +59,7 @@ export function ensureDocToolsInstalled(): void {
   console.log('[docTools] Instalando herramientas para analizar archivos (PDF/Office/ZIP) en segundo plano…');
   try {
     const child = spawn(process.env.SHELL || 'sh', ['-c', SCRIPT], {
-      detached: true, stdio: 'ignore', env: process.env,
+      detached: true, stdio: 'ignore', env: sanitizeChildEnv(process.env),
     });
     child.on('exit', () => {
       // Marcamos aunque markitdown falle: pdftotext/unzip suelen quedar OK y no

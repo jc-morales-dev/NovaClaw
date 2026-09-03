@@ -8,6 +8,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { Server as HttpServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 
+import { sanitizeChildEnv } from '../agent/childEnv';
 import { AGENT_TOKEN, DEFAULT_CWD } from './config';
 
 function clampInt(value: string | null, fallback: number, min: number, max: number): number {
@@ -39,7 +40,10 @@ export function attachPtyWebSocket(server: HttpServer) {
     try {
       child = spawn(scriptBin, ['-q', '-c', inner, '/dev/null'], {
         cwd: process.env.HOME || DEFAULT_CWD,
-        env: { ...process.env, TERM: 'xterm-256color' },
+        // La terminal es un shell interactivo real en manos del usuario, pero
+        // tampoco ahí viajan las credenciales: un `printenv` de más no debe
+        // costarle la key.
+        env: sanitizeChildEnv(process.env, { TERM: 'xterm-256color' }),
       });
     } catch (error: any) {
       try { ws.send(`\r\n\x1b[31mNo se pudo abrir la terminal: ${error?.message}\x1b[0m\r\n`); } catch {}

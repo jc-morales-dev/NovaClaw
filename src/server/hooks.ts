@@ -18,6 +18,8 @@ import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { sanitizeChildEnv } from '../agent/childEnv';
+
 const exec = promisify(execCb);
 
 const HOOKS_FILE = 'novaclaw.hooks.json';
@@ -104,7 +106,9 @@ export async function runPostToolUseHooks(
         shell: process.platform === 'win32' ? 'powershell.exe' : undefined,
         timeout: HOOK_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
-        env: { ...process.env, ...hookEnv(filePath, cwd) },
+        // Un novaclaw.hooks.json llega con el repo que el usuario clonó: es
+        // código de un tercero. No puede ver las credenciales del agente.
+        env: sanitizeChildEnv(process.env, hookEnv(filePath, cwd)),
       });
       const out = `${stdout ?? ''}${stderr ?? ''}`.trim();
       lines.push(`hook ✓ ${label}${out ? `: ${out.slice(0, 400)}` : ''}`);

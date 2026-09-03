@@ -9,6 +9,7 @@
  * un mensaje), que es el transporte estándar de MCP para procesos locales.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { sanitizeChildEnv } from './childEnv';
 import { McpHttpClient, extractToolText } from './mcpHttp';
 
 export interface McpServerConfig {
@@ -35,6 +36,14 @@ export interface McpToolDef {
 
 const PROTOCOL_VERSION = '2024-11-05';
 const REQUEST_TIMEOUT_MS = 30000;
+/** `initialize` es la PRIMERA request al servidor, y con `npx -y <paquete>` el
+ *  proceso todavía tiene que DESCARGAR el paquete de npm antes de contestar.
+ *  Medido en un teléfono con datos móviles: la primera conexión de un MCP
+ *  superaba los 30s y fallaba con "timeout en initialize"; la segunda, ya con
+ *  el paquete en caché, entraba en segundos. O sea que le fallaba a todo
+ *  usuario nuevo justo en su primer intento. Solo el handshake inicial paga
+ *  esta espera larga: el resto de las llamadas mantiene los 30s. */
+const INITIALIZE_TIMEOUT_MS = 180000;
 const MAX_STDERR_CHARS = 2000;
 
 /** Resuelve un secreto por id (ej: 'github') a su valor real, o null si no hay. */
@@ -87,7 +96,9 @@ class McpClient {
     // Sin shell: execvp resuelve el comando por PATH (que en el teléfono incluye
     // $PREFIX/bin, donde está npx). Evita problemas de quoting y es más seguro.
     this.child = spawn(command, args, {
-      env: { ...process.env, ...(env ?? {}) },
+      // El env que el usuario configuró para ESTE servidor sí pasa (es su
+      // credencial, a propósito); lo heredado del agente va saneado.
+      env: sanitizeChildEnv(process.env, env ?? {}),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child.stdout.on('data', (d: Buffer) => this.onData(d));
@@ -136,10 +147,17 @@ class McpClient {
   private request(method: string, params?: any): Promise<any> {
     if (this.dead) return Promise.reject(new Error('servidor MCP no disponible'));
     const id = this.nextId++;
+    const timeoutMs = method === 'initialize' ? INITIALIZE_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        if (this.pending.has(id)) { this.pending.delete(id); reject(new Error(`timeout en ${method}`)); }
-      }, REQUEST_TIMEOUT_MS);
+        if (this.pending.has(id)) {
+          this.pending.delete(id);
+          const extra = method === 'initialize'
+            ? ' (el servidor no respondió al conectar: puede que la descarga del paquete siga en curso o que la red esté muy lenta)'
+            : '';
+          reject(new Error(`timeout en ${method}${extra}`));
+        }
+      }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       try {
         this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
