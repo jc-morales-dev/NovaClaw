@@ -48,3 +48,14 @@ body {
     box-shadow: 0 0 42px rgba(255, 122, 26, 0.38);
   }
 }
+
+/* Área segura del sistema (barra de gestos abajo, notch arriba).
+   Requiere viewport-fit=cover en el meta viewport de index.html — sin eso
+   env(safe-area-inset-*) devuelve 0. Se aplican como clases utilitarias para
+   que cada pantalla sume el inset A SU propio padding en vez de pisarlo. */
+.pb-safe {
+  padding-bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+}
+.pb-safe-sm {
+  padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+}

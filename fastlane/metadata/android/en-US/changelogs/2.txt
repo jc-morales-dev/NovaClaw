@@ -1,0 +1,11 @@
+First public release.
+
+• Coding agent that verifies its own work: it edits the code and runs it through the compiler or linter before calling it done.
+• Web research across multiple sources, with citations.
+• Phone access: contacts, calendar, location, apps and camera, always with explicit permission.
+• Reads PDF, Word, Excel, PowerPoint and ZIP files.
+• Full Linux terminal inside the app.
+• Providers: Anthropic, OpenAI, Google Gemini, OpenRouter, NVIDIA and OpenCode Zen.
+• Sign in with your ChatGPT account, no API key required.
+• Spend control: choose how much the model thinks.
+• MCP servers to plug in external tools.

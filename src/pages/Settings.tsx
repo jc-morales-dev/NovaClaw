@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import { useSettings } from '../context/SettingsContext';
 import { translations } from '../translations';
-import { platform, type ProviderConfig, type ProviderInfo, type ModelInfo, type McpCatalogItem } from '../platform';
+import { platform, type ProviderConfig, type ProviderInfo, type ModelInfo, type McpCatalogItem, type ModelEffort } from '../platform';
 import { saveMcpSecret, hasMcpSecret, clearMcpSecret, confirmBiometric, hasNativeMcp } from '../mcpNative';
 import {
   getConnectors,
@@ -64,6 +64,8 @@ export default function Settings() {
   const [providerSaved, setProviderSaved] = useState(false);
   // Proveedores que ya tienen una API key guardada (una key por proveedor).
   const [keyProviders, setKeyProviders] = useState<string[]>([]);
+  // Cuánto piensa el modelo. Menos esfuerzo = menos tokens = más barato.
+  const [selectedEffort, setSelectedEffort] = useState<ModelEffort>('medium');
   // Login con ChatGPT (OpenAI Codex): sesión OAuth, sin API key.
   const [codexAuthed, setCodexAuthed] = useState(false);
   const [codexPlan, setCodexPlan] = useState<string | null>(null);
@@ -259,6 +261,7 @@ export default function Settings() {
       setConfig(c);
       setSelectedProvider(c.provider ?? 'opencode-zen');
       setSelectedModel(c.model ?? '');
+      setSelectedEffort(c.effort ?? 'medium');
     } catch {}
   }
 
@@ -379,13 +382,24 @@ export default function Settings() {
     const refresh = () => setConnectors(getConnectors());
     refresh();
     const unsub = onConnectorsChanged(refresh);
-    const onVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    // El setState cada 2,5s re-renderiza toda la pantalla de Ajustes. Con la app
+    // en segundo plano eso es puro gasto: se pausa y se retoma al volver.
+    let interval = 0;
+    const frenar = () => { if (interval) { window.clearInterval(interval); interval = 0; } };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        refresh();
+        if (!interval) interval = window.setInterval(refresh, 2500);
+      } else {
+        frenar();
+      }
+    };
+    onVisible();
     document.addEventListener('visibilitychange', onVisible);
-    const interval = window.setInterval(refresh, 2500);
     return () => {
       unsub();
       document.removeEventListener('visibilitychange', onVisible);
-      window.clearInterval(interval);
+      frenar();
     };
   }, []);
 
@@ -418,9 +432,10 @@ export default function Settings() {
     setProviderSaving(true);
     setVerifyError('');
     try {
-      const update: { provider?: string; model?: string; apiKey?: string } = {
+      const update: { provider?: string; model?: string; apiKey?: string; effort?: ModelEffort } = {
         provider: selectedProvider,
         model: selectedModel.trim(),
+        effort: selectedEffort,
       };
       // Solo mandamos la key si el usuario escribió una nueva (no pisamos la guardada).
       if (apiKeyInput.trim()) update.apiKey = apiKeyInput.trim();
@@ -441,7 +456,7 @@ export default function Settings() {
   return (
     <div className="flex flex-col h-full bg-zinc-950 text-zinc-100 font-sans relative">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 pt-12 pb-4 sticky top-0 bg-zinc-950/80 backdrop-blur-xl z-20">
+      <div className="flex items-center justify-between px-4 pt-12 pb-4 sticky top-0 bg-zinc-950/95 z-20">
         <div className="flex items-center gap-2">
           <button
             onClick={() => navigate(-1)}
@@ -459,7 +474,7 @@ export default function Settings() {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-12 space-y-8">
+      <div className="flex-1 overflow-y-auto px-4 pb-12 pb-safe space-y-8">
 
         {/* Modelo de IA — una sola entrada: proveedor + key + modelo verificado */}
         <SettingsSection icon={<Cpu size={18} />} title={isSpanish ? 'Modelo de IA' : 'AI Model'}>
@@ -841,6 +856,38 @@ export default function Settings() {
                         </div>
                       </div>
                     )}
+
+                    {/* Paso 4: cuánto piensa el modelo (control de gasto) */}
+                    <div className="space-y-1.5">
+                      <label className="text-zinc-400 text-xs font-semibold px-1">
+                        {isSpanish ? '4 · Cuánto piensa' : '4 · Thinking depth'}
+                      </label>
+                      <div className="grid grid-cols-5 gap-1.5">
+                        {(['low', 'medium', 'high', 'xhigh', 'max'] as ModelEffort[]).map((e) => (
+                          <button
+                            key={e}
+                            type="button"
+                            onClick={() => setSelectedEffort(e)}
+                            className={`px-1 py-2 rounded-lg text-[11px] font-semibold border transition-colors ${
+                              e === selectedEffort
+                                ? 'bg-[#FF7A1A]/12 border-[#FF7A1A] text-orange-100'
+                                : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:bg-zinc-800'
+                            }`}
+                          >
+                            {e === 'low' ? (isSpanish ? 'Poco' : 'Low')
+                              : e === 'medium' ? (isSpanish ? 'Medio' : 'Med')
+                              : e === 'high' ? (isSpanish ? 'Alto' : 'High')
+                              : e === 'xhigh' ? (isSpanish ? 'Muy alto' : 'X-high')
+                              : (isSpanish ? 'Máximo' : 'Max')}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-zinc-600 text-[11px] px-1 pt-1 leading-snug">
+                        {isSpanish
+                          ? 'Menos esfuerzo gasta menos tokens y responde más rápido; más esfuerzo razona mejor en tareas difíciles. Solo aplica a los modelos Claude.'
+                          : 'Less effort spends fewer tokens and answers faster; more effort reasons better on hard tasks. Claude models only.'}
+                      </p>
+                    </div>
 
                     {/* Guardar */}
                     <button

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { getProvider } from '../agent/providers';
+import type { ModelEffort } from '../agent/modelClient';
 import { hasCodexAuth, initCodexAuthStorage } from '../agent/openaiCodexAuth';
 
 // Storage REAL de los tokens de ChatGPT (openaiCodexAuth no puede tocar fs por
@@ -27,7 +28,13 @@ export const zenConfig = {
   // minimax-m2.5-free fue discontinuado. Default a un modelo vigente y económico.
   baseUrl: process.env.ZEN_BASE_URL ?? 'https://opencode.ai/zen/v1',
   model: process.env.ZEN_MODEL ?? 'claude-haiku-4-5',
+  // Cuánto piensa el modelo (Anthropic). La API asume 'high' si no se manda:
+  // en un teléfono con BYOK eso es pagar el máximo en cada mensaje sin decidirlo.
+  // 'medium' es el punto de equilibrio; el usuario lo cambia desde Ajustes.
+  effort: (process.env.NOVACLAW_EFFORT as ModelEffort | undefined) ?? 'medium',
 };
+
+export const EFFORT_VALUES: ModelEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 // Token compartido app↔agente. Lo genera la capa nativa (Kotlin, TokenStore) y lo
 // pasa por env NOVACLAW_TOKEN. En dev (PC) queda vacío y NO se exige. Protege
@@ -58,6 +65,7 @@ export function loadConfigFromFile() {
     if (typeof raw.baseUrl === 'string' && raw.baseUrl.trim()) zenConfig.baseUrl = raw.baseUrl.trim();
     if (typeof raw.apiKey === 'string' && raw.apiKey.trim()) zenConfig.apiKey = raw.apiKey.trim();
     if (typeof raw.model === 'string' && raw.model.trim()) zenConfig.model = raw.model.trim();
+    if (EFFORT_VALUES.includes(raw.effort)) zenConfig.effort = raw.effort;
     syncBaseUrlToProvider();
   } catch (error: any) {
     console.error('No se pudo leer novaclaw.config.json:', error?.message);
@@ -77,7 +85,7 @@ export function saveConfigToFile() {
   try {
     fs.writeFileSync(
       NOVACLAW_CONFIG_PATH,
-      JSON.stringify({ provider: zenConfig.provider, baseUrl: zenConfig.baseUrl, apiKey: '', model: zenConfig.model }, null, 2),
+      JSON.stringify({ provider: zenConfig.provider, baseUrl: zenConfig.baseUrl, apiKey: '', model: zenConfig.model, effort: zenConfig.effort }, null, 2),
       'utf8',
     );
   } catch (error: any) {

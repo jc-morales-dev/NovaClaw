@@ -102,13 +102,15 @@ const clasificar = (tool, args) => classifyToolCall({ tool, arguments: args }, c
   assert.equal(write.requiresApproval, false, 'escribir dentro del workspace sigue igual');
 }
 
-// ── Y el agente lo respeta: /auto y "permitir siempre" no lo saltan ─────────
+// ── Quién puede saltarse la aprobación y quién no ───────────────────────────
+// AUTO sí: el usuario lo eligió a propósito. "Permitir siempre" no: es un clic
+// dentro de un diálogo y no debe valer por un permiso permanente para ejecutar.
 
 {
   const { createAgentRuntime, createAgentSession } = await import('../src/agent/runtime.ts');
   const os = await import('node:os');
 
-  const construirRuntime = () => {
+  const construirRuntime = (onExec) => {
     const respuestas = [
       '{"kind":"tool_call","tool":"terminal.run","arguments":{"command":"node payload.js"}}',
       '{"kind":"message","message":"listo"}',
@@ -116,22 +118,35 @@ const clasificar = (tool, args) => classifyToolCall({ tool, arguments: args }, c
     return createAgentRuntime({
       workspaceRoot: os.tmpdir(),
       callModel: async () => respuestas.shift() ?? '{"kind":"message","message":"fin"}',
-      executeToolCall: async () => {
-        throw new Error('el executor NO debe correr: la aprobación es obligatoria');
+      executeToolCall: async (c) => {
+        if (onExec) { onExec(c); return { name: c.tool, command: '', status: 'success', output: 'ok' }; }
+        throw new Error('el executor NO debe correr sin aprobación');
       },
     });
   };
 
-  // Modo auto: el usuario dijo "no me preguntes más". Aun así, ejecutar código sí.
+  // Modo auto: es una decisión deliberada del usuario ("trabajá solo"), y en ese
+  // modo NO se pregunta nada. Es lo mismo que hace Claude Code al saltarse los
+  // permisos: el consentimiento se da una vez, al elegir el modo, no por acción.
+  const corridos = [];
   const enAuto = createAgentSession('auto', os.tmpdir());
-  const auto = await construirRuntime().runUserTurn(enAuto, 'corré el payload', undefined, undefined, 'auto');
-  assert.equal(auto.events[0].type, 'approval', '/auto no salta la aprobación de ejecución');
+  const auto = await construirRuntime((c) => corridos.push(c.tool))
+    .runUserTurn(enAuto, 'corré el payload', undefined, undefined, 'auto');
+  assert.ok(!auto.events.some((e) => e.type === 'approval'), '/auto no pregunta');
+  assert.deepEqual(corridos, ['terminal.run'], '/auto ejecuta de verdad');
 
-  // "Permitir siempre" de un turno anterior tampoco autoriza el siguiente.
+  // "Permitir siempre" es otra cosa: es un clic dentro de un diálogo, fácil de
+  // dar sin leer. No habilita para siempre la ejecución de código; para eso está
+  // auto, que se elige a propósito.
   const conSiempre = createAgentSession('siempre', os.tmpdir());
   conSiempre.autoApproveTools = ['terminal.run'];
   const siempre = await construirRuntime().runUserTurn(conSiempre, 'corré el payload');
   assert.equal(siempre.events[0].type, 'approval', '"permitir siempre" no cubre la ejecución');
+
+  // Y en modo normal (build) se sigue preguntando todo.
+  const enBuild = createAgentSession('build', os.tmpdir());
+  const build = await construirRuntime().runUserTurn(enBuild, 'corré el payload');
+  assert.equal(build.events[0].type, 'approval', 'en modo normal se pregunta');
 }
 
 // ── Tercera puerta: inyección por el NOMBRE del archivo ─────────────────────
@@ -281,26 +296,32 @@ const clasificar = (tool, args) => classifyToolCall({ tool, arguments: args }, c
   const { createAgentSession } = await import('../src/agent/runtime.ts');
   const os = await import('node:os');
 
-  const construir = (llamadas) => createNativeAgentRuntime({
+  const construir = (llamadas, onExec) => createNativeAgentRuntime({
     workspaceRoot: os.tmpdir(),
     getConfig: () => ({ providerId: 'x', apiKey: 'x', model: 'm' }),
     callModel: async () => (llamadas.shift() ?? { text: 'listo' }),
-    executeToolCall: async () => {
+    executeToolCall: async (c) => {
+      if (onExec) { onExec(c); return { name: c.tool, command: '', status: 'success', output: 'ok' }; }
       throw new Error('el executor NO debe correr sin aprobación');
     },
   });
 
-  // Modo auto + terminal_run.
+  // AUTO no pregunta nada: el usuario ya dio el permiso al elegir el modo, igual
+  // que al saltarse los permisos en Claude Code. El executor corre.
+  const corridos = [];
   const s1 = createAgentSession('nativo-auto', os.tmpdir());
-  const r1 = await construir([{ toolCalls: [{ id: 'a', name: 'terminal_run', args: { command: 'node payload.js' } }] }])
-    .runUserTurn(s1, 'corré', undefined, undefined, 'auto');
-  assert.ok(r1.events.some((e) => e.type === 'approval'), 'nativo: /auto no salta terminal_run');
+  const r1 = await construir(
+    [{ toolCalls: [{ id: 'a', name: 'terminal_run', args: { command: 'node payload.js' } }] }],
+    (c) => corridos.push(c.tool),
+  ).runUserTurn(s1, 'corré', undefined, undefined, 'auto');
+  assert.ok(!r1.events.some((e) => e.type === 'approval'), 'nativo: /auto no pregunta');
+  assert.deepEqual(corridos, ['terminal.run'], 'nativo: /auto ejecuta de verdad');
 
-  // Modo auto + mcp_add.
-  const s2 = createAgentSession('nativo-mcp', os.tmpdir());
+  // En modo normal (build) sí para: mcp_add arranca un proceso.
+  const s2 = createAgentSession('nativo-build', os.tmpdir());
   const r2 = await construir([{ toolCalls: [{ id: 'b', name: 'mcp_add', args: { name: 'x', command: 'node', args: ['payload.js'] } }] }])
-    .runUserTurn(s2, 'instalá', undefined, undefined, 'auto');
-  assert.ok(r2.events.some((e) => e.type === 'approval'), 'nativo: /auto no salta mcp_add');
+    .runUserTurn(s2, 'instalá');
+  assert.ok(r2.events.some((e) => e.type === 'approval'), 'nativo: en build, mcp_add pregunta');
 
   // Dos tools del viejo fast-path seguidas: antes se ejecutaban en paralelo sin
   // consultar la política. Ahora file_extract exige aprobación.

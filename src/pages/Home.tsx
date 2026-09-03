@@ -63,12 +63,32 @@ export default function Home() {
       }
     }
 
+    // El poll consulta al agente y hace setState → re-render de toda la Home.
+    // A 2s eso corría incluso con la app en segundo plano o con el usuario en
+    // otra pestaña: gasto de CPU y batería por una pantalla que nadie mira.
+    // Ahora solo late cuando la pantalla está VISIBLE, y a 4s (el estado del
+    // agente cambia por acción del usuario, no solo).
     loadStatus();
-    const interval = window.setInterval(loadStatus, 2000);
+    let interval = 0;
+    const arrancar = () => {
+      if (interval) return;
+      interval = window.setInterval(loadStatus, 4000);
+    };
+    const frenar = () => {
+      if (!interval) return;
+      window.clearInterval(interval);
+      interval = 0;
+    };
+    const onVisibilidad = () => {
+      if (document.visibilityState === 'visible') { loadStatus(); arrancar(); } else { frenar(); }
+    };
+    onVisibilidad();
+    document.addEventListener('visibilitychange', onVisibilidad);
 
     return () => {
       isMounted = false;
-      window.clearInterval(interval);
+      frenar();
+      document.removeEventListener('visibilitychange', onVisibilidad);
     };
   }, []);
 
@@ -139,7 +159,7 @@ export default function Home() {
       <div className="pointer-events-none absolute -top-36 left-1/2 -translate-x-1/2 w-[480px] h-[340px] bg-[radial-gradient(ellipse_at_center,rgba(255,122,26,0.20),rgba(232,148,26,0.06)_55%,transparent_75%)]" />
 
       {/* Header */}
-      <div className="px-5 pt-12 pb-4 sticky top-0 bg-[#0B0908]/85 backdrop-blur-xl z-10 flex justify-between items-center border-b border-white/5">
+      <div className="px-5 pt-12 pb-4 sticky top-0 bg-[#0B0908]/95 z-10 flex justify-between items-center border-b border-white/5">
         <div className="flex items-center gap-2.5">
           <span className="w-9 h-9 rounded-full bg-black border border-[#FF7A1A]/30 shadow-[0_0_14px_rgba(255,122,26,0.35)] flex items-center justify-center overflow-hidden shrink-0">
             <NovaCircle className="w-[135%] h-[135%]" />
@@ -154,7 +174,7 @@ export default function Home() {
       <div className="px-5 pt-6 space-y-4 relative">
         {/* Tarjeta principal del agente */}
         <div className="rounded-[28px] p-[1px] bg-gradient-to-b from-[#FF7A1A]/45 via-white/5 to-transparent shadow-xl shadow-black/50">
-          <div className="rounded-[27px] bg-[#120D09]/90 backdrop-blur px-6 pt-8 pb-6 text-center relative overflow-hidden">
+          <div className="rounded-[27px] bg-[#120D09]/95 px-6 pt-8 pb-6 text-center relative overflow-hidden">
             <div className="pointer-events-none absolute inset-x-0 -top-24 h-48 bg-[radial-gradient(ellipse_at_center,rgba(255,122,26,0.15),transparent_70%)]" />
 
             <div className="nova-orb-glow relative w-24 h-24 mx-auto mb-4 rounded-full bg-black border border-[#FF7A1A]/25">
@@ -212,7 +232,7 @@ export default function Home() {
       </div>
 
       {/* Barra de navegación inferior */}
-      <div className="sticky bottom-0 mt-auto z-10 flex justify-around items-center px-2 pt-3 pb-6 bg-[#0B0908]/90 backdrop-blur-xl border-t border-white/5">
+      <div className="sticky bottom-0 mt-auto z-10 flex justify-around items-center px-2 pt-3 pb-safe bg-[#0B0908]/95 border-t border-white/5">
         <NavItem icon={<HomeIcon size={20} />} label="Inicio" active />
         <NavItem icon={<MessageSquare size={20} />} label="Chat" onClick={() => navigate('/chat')} />
         <NavItem icon={<TerminalIcon size={20} />} label="Terminal" onClick={() => navigate('/terminal')} />

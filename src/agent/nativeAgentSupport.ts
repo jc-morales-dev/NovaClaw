@@ -4,7 +4,7 @@
  * sin efectos + tablas de configuración, separadas para dejar el loop del agente
  * enfocado en la orquestación. Solo imports de TIPO / lógica → browser-safe.
  */
-import { callModelWithTools, type AgentMessage } from './modelClient';
+import { callModelWithTools, type AgentMessage, type ModelEffort } from './modelClient';
 import type { McpToolDef } from './mcp';
 import type { AgentSession, AgentRuntimeEvent } from './runtime';
 import type { ToolCallLike, ToolExecutionResult } from './types';
@@ -68,7 +68,7 @@ export function estimateHistoryTokens(history: { content: string }[]): number {
 
 export type RuntimeResult = { events: AgentRuntimeEvent[] };
 
-export type ConfigSnapshot = { providerId: string; apiKey: string; model: string };
+export type ConfigSnapshot = { providerId: string; apiKey: string; model: string; effort?: ModelEffort };
 
 export interface NativeRuntimeOptions {
   workspaceRoot: string;
@@ -113,12 +113,22 @@ export function friendlyModelError(error: any, apiKey: string): string {
   if (!apiKey?.trim()) {
     return 'Todavía no configuraste un modelo de IA (falta la API key).' + settings;
   }
+  // 429 va PRIMERO: es el error más común en los niveles gratuitos (NVIDIA,
+  // OpenRouter free) y antes caía en el mensaje genérico o —peor— en el de red,
+  // que mandaba al usuario a revisar el wifi cuando el wifi andaba perfecto.
+  if (raw.includes('429') || raw.includes('too many requests') || raw.includes('rate limit')) {
+    return 'Alcanzaste el límite de uso del proveedor (error 429). No es tu conexión: es la cuota. Esperá unos minutos, o cambiá de modelo o de proveedor.' + settings;
+  }
+  // Sobrecarga temporal del proveedor: tampoco es culpa del usuario ni de su red.
+  if (raw.includes('503') || raw.includes('529') || raw.includes('overloaded') || raw.includes('unavailable')) {
+    return 'El proveedor está sobrecargado en este momento. Probá de nuevo en un rato, o cambiá de modelo en Ajustes.';
+  }
   if (raw.includes('401') || raw.includes('403') || raw.includes('unauthorized') ||
-      raw.includes('invalid') || raw.includes('api key') || raw.includes('forbidden')) {
+      raw.includes('api key') || raw.includes('forbidden')) {
     return 'Tu API key no es válida o venció, o el modelo elegido no está disponible con esa cuenta.' + settings;
   }
   if (raw.includes('fetch failed') || raw.includes('network') || raw.includes('enotfound') ||
-      raw.includes('timeout') || raw.includes('etimedout') || raw.includes('econnrefused') ||
+      raw.includes('etimedout') || raw.includes('econnrefused') ||
       raw.includes('getaddrinfo') || raw.includes('socket')) {
     return 'No pude conectarme con el modelo. Revisá tu conexión a internet e intentá de nuevo.';
   }

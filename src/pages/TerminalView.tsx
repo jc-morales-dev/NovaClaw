@@ -310,7 +310,7 @@ export default function TerminalView() {
   return (
     <div className="flex flex-col h-full bg-[#0C0C0C] text-zinc-300 font-mono text-[13px] relative">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 sticky top-0 bg-zinc-900/80 backdrop-blur-md border-b border-zinc-800 z-10">
+      <div className="flex items-center justify-between px-4 py-3 sticky top-0 bg-zinc-900/95 border-b border-zinc-800 z-10">
         <div className="flex items-center gap-3">
           <button onClick={() => navigate(-1)} className="text-zinc-400 hover:text-zinc-100 transition-colors">
             <ArrowLeft size={18} />
@@ -371,7 +371,7 @@ export default function TerminalView() {
 
       {/* Barra de teclas especial (solo en PTY) */}
       {mode === 'pty' && (
-        <div className="flex-shrink-0 border-t border-zinc-800 bg-zinc-900/95 backdrop-blur-md">
+        <div className="flex-shrink-0 border-t border-zinc-800 bg-zinc-900/95 pb-safe-sm">
           <div className="flex items-center gap-1.5 px-2 py-1.5 overflow-x-auto scrollbar-hide">
             {/* Ctrl sostenido */}
             <button

@@ -2,6 +2,13 @@
  * Definiciones de herramientas en JSON Schema para function-calling nativo.
  * Un solo set, que se traduce al formato de cada API (OpenAI vs Anthropic).
  * Los nombres coinciden con el executor en tools.ts.
+ *
+ * ⚠️ Las descripciones viajan ENTERAS en CADA llamada al modelo, antes del
+ * mensaje del usuario. Con 26 herramientas eso eran ~4.500 tokens de prefill
+ * por turno, y en proveedores sin prompt caching (NVIDIA) se re-procesan cada
+ * vez — era la causa de que el primer "hola" tardara. Se escriben densas a
+ * propósito: la regla que el modelo necesita, sin ejemplos ni relleno. Antes de
+ * agregar una frase acá, preguntarse si el modelo falla sin ella.
  */
 
 export interface ToolSchema {
@@ -18,7 +25,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'terminal_run',
     description:
-      'Run a shell command in the phone\'s embedded Linux. Use for anything: ls, find, cat, git, pkg/npm install, and reading/deleting files under /sdcard (the whole phone storage) when the Files connector is enabled.',
+      "Run a shell command in the phone's embedded Linux (ls, find, cat, git, pkg/npm install…). Also reaches /sdcard — the whole phone storage — when the Files connector is on.",
     parameters: {
       type: 'object',
       properties: { command: { type: 'string', description: 'The shell command to execute.' } },
@@ -28,7 +35,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'file_read',
     description:
-      "Read a text file's contents. Output is prefixed with line numbers (like `cat -n`) so you can reference exact lines when editing. For large files, use offset+limit to read a window of lines instead of the whole file.",
+      'Read a text file. Output is prefixed with line numbers (like `cat -n`) so you can cite exact lines when editing. Use offset+limit to read a window of a large file.',
     parameters: {
       type: 'object',
       properties: {
@@ -42,7 +49,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'file_write',
     description:
-      'Create a NEW file with the given content. For modifying an existing file prefer file_edit (surgical) — only use file_write to overwrite when a full rewrite is really needed.',
+      'Create a NEW file. To change an existing one prefer file_edit — only overwrite here when a full rewrite is really needed.',
     parameters: {
       type: 'object',
       properties: {
@@ -55,7 +62,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'file_edit',
     description:
-      'Surgically edit an existing file: replace an EXACT text snippet with new text, without rewriting the whole file. old_string must match the file content exactly (including whitespace/indentation) and must be unique in the file — include a few surrounding lines to disambiguate. IMPORTANT: file_read prefixes each line with "<number>\\t" — do NOT include that line-number prefix in old_string, only the real file text. Use replace_all=true to replace every occurrence (e.g. renaming).',
+      'Replace an EXACT snippet in an existing file. old_string must match the file byte-for-byte (whitespace and indentation included) and be unique — add surrounding lines to disambiguate. Do NOT include the "<number>\\t" prefix that file_read adds. replace_all=true replaces every occurrence.',
     parameters: {
       type: 'object',
       properties: {
@@ -70,7 +77,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'file_edit_multi',
     description:
-      'Apply SEVERAL surgical edits to ONE file ATOMICALLY (all-or-nothing). Each edit is an exact old_string→new_string replacement (same rules as file_edit: match exactly, no line-number prefix, unique unless replace_all). If ANY edit fails to match, NOTHING is written — fix it and resend. Prefer this over multiple file_edit calls when changing several spots in the same file: fewer round-trips and no half-edited intermediate state.',
+      'Several exact edits to ONE file, atomically. Same matching rules as file_edit. If any edit fails to match, NOTHING is written — fix and resend. Prefer this over repeated file_edit calls on the same file.',
     parameters: {
       type: 'object',
       properties: {
@@ -95,7 +102,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'file_grep',
     description:
-      'Search file CONTENTS with a regular expression, recursively. Returns matching lines as path:line: text. Use this to find where code/text lives before reading or editing. Skips node_modules, .git and binary files.',
+      'Search file CONTENTS by regex, recursively. Returns matching lines as path:line: text. Use it to locate code before reading or editing. Skips node_modules, .git and binaries.',
     parameters: {
       type: 'object',
       properties: {
@@ -109,7 +116,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'file_extract',
     description:
-      "Extract the TEXT/content of a RICH file (PDF, Word .docx, Excel .xlsx, PowerPoint .pptx, .zip, .html, .csv, .epub, etc.) as clean Markdown so you can read and analyze it. Uses markitdown under the hood (high quality, LLM-oriented). Use this on any non-plain-text file the user attaches (they land in ~/uploads or /root/uploads) — e.g. 'resumime este PDF', 'qué dice este Excel'. For plain text/code use file_read; for images use image_view. Handles large files (output is trimmed if huge).",
+      'Extract the text of a RICH file (PDF, .docx, .xlsx, .pptx, .zip, .html, .csv, .epub…) as clean Markdown. Use it on any non-plain-text file the user attaches — they land in ~/uploads. Plain text and code go to file_read; images to image_view.',
     parameters: {
       type: 'object',
       properties: { path: { type: 'string', description: 'Path to the file to extract (e.g. /root/uploads/informe.pdf).' } },
@@ -148,7 +155,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'diagnostics',
     description:
-      "Check a code file for REAL errors: runs the language's type-checker/linter and returns the compiler diagnostics. Supports TypeScript (tsc types), Python (ruff/pyflakes/py_compile), JS (eslint/node --check), Go (go vet), Rust (cargo check), C/C++ (gcc/clang -fsyntax-only), PHP (php -l), Ruby (ruby -c), shell (shellcheck/bash -n) and JSON. Call it right AFTER editing code to SEE the errors you may have introduced and fix them — this is how you verify code without guessing. If the checker isn't installed it tells you how to install it.",
+      "Run the language's type-checker or linter on a file and return the real compiler errors. Covers TypeScript, Python, JS, Go, Rust, C/C++, PHP, Ruby, shell and JSON. Call it right AFTER editing code to see what you broke instead of guessing. Says how to install the checker if it's missing.",
     parameters: {
       type: 'object',
       properties: { path: { type: 'string', description: 'Path to the code file to check.' } },
@@ -158,7 +165,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'code_intel',
     description:
-      "Code intelligence via a real LSP language server (TypeScript/JavaScript for now) — understand code WITHOUT blind grepping. Actions: 'symbols' (outline a file: its functions/classes/variables with line numbers — pass path); 'find' (where a symbol is DEFINED across the project, by name — pass query, optional path to scope the project); 'references' (every place a symbol is used, by name — pass query). Prefer this over file_grep to navigate real code: it understands scopes/imports, not just text. It needs the language server installed in the phone's Linux (it tells you the install command if missing).",
+      "Code intelligence via a real LSP server (TypeScript/JavaScript). Actions: 'symbols' (outline a file — pass path), 'find' (where a symbol is DEFINED — pass query), 'references' (every use of a symbol — pass query). Prefer it over file_grep on real code: it understands scopes and imports. Says how to install the server if it's missing.",
     parameters: {
       type: 'object',
       properties: {
@@ -172,7 +179,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'phone_location',
     description:
-      "Get the phone's current GPS location AND human-readable address (street, city, state, country). Use when the user asks where they are. Needs the Location connector.",
+      "The phone's current GPS location plus a readable address (street, city, country). Needs the Location connector.",
     parameters: { type: 'object', properties: {} },
   },
   {
@@ -186,7 +193,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'phone_photo',
     description:
-      'Take a photo with the phone camera and save it as a file, then VIEW it automatically — the image is attached so you can actually see and describe what is in front of the camera. Needs the Camera connector.',
+      'Take a photo with the phone camera and view it automatically, so you can actually see and describe what is in front of the lens. Needs the Camera connector.',
     parameters: {
       type: 'object',
       properties: { facing: { type: 'string', enum: ['back', 'front'], description: 'Which camera.' } },
@@ -195,7 +202,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'phone_packages',
     description:
-      "List the phone's installed apps (APKs) or the history of UNINSTALLED apps. Use when the user asks what apps they have, what was installed/uninstalled recently, or to find a specific app. action='installed' lists apps newest-install first; action='uninstalled' shows the uninstall history (tracked since NovaClaw was installed); action='search' finds an app by name or package. Always available — no connector needed.",
+      "The phone's apps: action='installed' lists them newest-first, 'uninstalled' shows the uninstall history, 'search' finds one by name or package. No connector needed.",
     parameters: {
       type: 'object',
       properties: {
@@ -210,7 +217,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'phone_calendar',
     description:
-      "Read the user's upcoming calendar events for the next N days (title, date/time, location). Use when the user asks about their agenda, meetings or what they have coming up. Needs the Calendar connector.",
+      "The user's upcoming calendar events for the next N days (title, time, location). Needs the Calendar connector.",
     parameters: {
       type: 'object',
       properties: { days: { type: 'number', description: 'How many days ahead to look (default 14).' } },
@@ -219,7 +226,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'image_view',
     description:
-      'Look at an image file (jpg, png, webp, gif) and attach it so you can actually SEE it — describe it, read text in it, analyze a screenshot or photo. Use for images under /sdcard/DCIM, /sdcard/Pictures, downloads, or a photo you just took.',
+      'Look at an image file (jpg, png, webp, gif) and attach it so you can actually SEE it — describe it, read text in it, analyze a screenshot or photo.',
     parameters: {
       type: 'object',
       properties: { path: { type: 'string', description: 'Path to the image file.' } },
@@ -229,7 +236,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'deep_research',
     description:
-      'Research a question ACROSS MULTIPLE web sources in one shot: it searches the web, opens the best results, and returns a digest with an excerpt from each source (numbered). Then you synthesize the answer citing the sources [1][2] and cross-checking facts between them (flag disagreements). Use this for any non-trivial question that benefits from several sources — "what is the best X", comparisons, current events, prices, how something works, fact-checking. For a single known URL use web_fetch; for a quick lookup use web_search; for a real answer that must be RIGHT and well-sourced, use deep_research.',
+      'Research a question across MULTIPLE web sources in one shot: searches, opens the best results, returns a numbered digest. Then synthesize citing [1][2] and flag disagreements between sources. Use it when the answer must be right and well-sourced — comparisons, current events, prices, fact-checking. One known URL → web_fetch; quick lookup → web_search.',
     parameters: {
       type: 'object',
       properties: {
@@ -242,7 +249,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'web_search',
     description:
-      'Search the WEB and get a ranked list of results (title, URL, snippet) — no API key needed. This is your way to FIND pages when you don\'t already know the URL: current info, docs, error messages, prices, news, "how to X", any research question. Workflow (like a research pro): web_search to find the best sources, then web_fetch the top 1-3 URLs to read them in full, then synthesize the answer with citations. Use precise keywords; refine and search again if the first results are weak. For anything time-sensitive or that you are not 100% sure of, SEARCH instead of guessing.',
+      "Search the WEB for a ranked list of results (title, URL, snippet). This is how you FIND pages when you don't know the URL. Then web_fetch the top 1-3 to read them in full and answer with citations. On anything time-sensitive or uncertain, search instead of guessing.",
     parameters: {
       type: 'object',
       properties: {
@@ -255,7 +262,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'web_fetch',
     description:
-      'Fetch a web page or API over HTTP GET and return its text content (HTML is stripped to readable text, output truncated). Use to READ a specific URL — docs, an API, or a result you got from web_search. To find URLs in the first place, use web_search.',
+      'Fetch a web page or API over HTTP GET and return its readable text (HTML stripped, output truncated). To find URLs in the first place, use web_search.',
     parameters: {
       type: 'object',
       properties: { url: { type: 'string', description: 'The http(s) URL to fetch.' } },
@@ -270,7 +277,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'mcp_add',
     description:
-      "Install/connect an MCP server so its tools become available to you. Use when the user asks to add/install an MCP (e.g. \"instalá el MCP de GitHub\"). Most MCP servers run via npx: command='npx', args=['-y','<package>']. Common packages: @modelcontextprotocol/server-github, @modelcontextprotocol/server-filesystem, @modelcontextprotocol/server-postgres, @modelcontextprotocol/server-slack, @modelcontextprotocol/server-brave-search, firecrawl-mcp, @notionhq/notion-mcp-server. If you don't know the exact package, web_fetch to find the official one first. Give the server a short lowercase name. SECRETS/TOKENS: never ask the user to type a token in the chat (it would be exposed). If the server needs a token, set env to a PLACEHOLDER like {\"GITHUB_PERSONAL_ACCESS_TOKEN\":\"${SECRET:github}\"} (SECRET id = the server name) and tell the user to paste the token in Ajustes → Herramientas (MCP) → the server's card, then retry. If the connection fails, read the error (it includes the server's stderr) to explain what's missing.",
+      "Install/connect an MCP server so its tools become available to you. Use it whenever the user asks to add one (\"instalá el MCP de GitHub\") — they should never have to find it in the settings themselves. Most run via npx: command='npx', args=['-y','<package>']. Give the server a short lowercase name; web_fetch the official package if unsure. NEVER ask the user to type a token in the chat — set env to a placeholder like {\"GITHUB_PERSONAL_ACCESS_TOKEN\":\"${SECRET:github}\"} (SECRET id = server name) and tell them to paste it in Ajustes → Herramientas (MCP), then retry. On failure, read the error (it carries the server's stderr) to explain what's missing.",
     parameters: {
       type: 'object',
       properties: {
@@ -294,7 +301,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'todo_write',
     description:
-      'Maintain a visible task plan for a multi-step job. Call it at the start to lay out the steps, and again to update statuses as you go (mark one in_progress before working on it, completed when done). The user sees the checklist update live. Use it for non-trivial tasks with 3+ steps; skip it for single-step requests.',
+      'Maintain a visible task plan for a multi-step job. Call it at the start to lay out the steps, then again to update statuses (one in_progress at a time, completed when done). Always send the FULL list. Use it for 3+ steps; skip it for single-step requests.',
     parameters: {
       type: 'object',
       properties: {
@@ -317,7 +324,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'subagent_run',
     description:
-      'Delegate a self-contained subtask to a fresh sub-agent with its own clean context (like a research assistant). It has the same tools (except spawning more sub-agents and approval-gated actions) and returns a final text report. Use it for big explorations (e.g. "map this repo", "find all usages of X") so the main conversation stays focused. To fan out, issue SEVERAL subagent_run calls in the SAME turn for independent subtasks — they run in PARALLEL. The sub-agent knows NOTHING about this conversation: include every detail it needs in the task.',
+      'Delegate a self-contained subtask to a fresh sub-agent with its own clean context. It has the same tools (except spawning more sub-agents) and returns a text report. Issue SEVERAL calls in the SAME turn to run independent subtasks in PARALLEL. The sub-agent knows NOTHING about this conversation — put every detail it needs in the task.',
     parameters: {
       type: 'object',
       properties: {

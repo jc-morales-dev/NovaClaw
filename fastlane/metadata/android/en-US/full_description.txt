@@ -1,0 +1,31 @@
+NovaClaw is an AI agent that runs entirely inside your Android phone, on an embedded Linux. Think Claude Code or Codex, but in your pocket.
+
+You bring your own API key. NovaClaw does not resell credits or sit between you and your data: you talk straight to the provider you choose.
+
+<b>What it can do</b>
+
+* Actually write code: it explores the project, edits files surgically, and verifies its own work with the compiler or linter before calling it done.
+* Research the web: searches several sources, reads them, and answers with citations, flagging where they disagree.
+* Handle your phone: contacts, calendar, location, installed apps, and taking photos it can then look at.
+* Work with your files: reads PDF, Word, Excel, PowerPoint and ZIP, converting them to text it can analyse.
+* A full Linux terminal: 390+ commands, with npm, pip and git to install whatever you need.
+
+<b>Supported providers</b>
+
+Anthropic (Claude), OpenAI, Google (Gemini), OpenRouter, NVIDIA and OpenCode Zen. With OpenAI you can also sign in with your ChatGPT account, no API key needed.
+
+<b>External tools (MCP)</b>
+
+Connect MCP servers to give it new abilities: GitHub, databases, search engines. Just ask for one in the chat and it installs it itself.
+
+<b>Privacy</b>
+
+Your API keys are stored encrypted in the Android Keystore, never in plain text. The agent listens on localhost only and requires a token, so no other app on the phone can reach it. System permissions are granted by you, one at a time, from Settings.
+
+<b>What you need</b>
+
+A phone running Android 7 or later, and an API key from the provider of your choice. Several of them offer a free tier to start with.
+
+<b>Heads up</b>
+
+On first launch it downloads and installs the full Linux environment, which takes a few minutes and several hundred megabytes.

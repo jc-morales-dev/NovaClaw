@@ -35,6 +35,20 @@ async function startServer() {
   // Express corta en 100kb y devuelve 413 (HTML) → "Unexpected token '<'" en la UI.
   app.use(express.json({ limit: '25mb' }));
 
+  // Un body roto (JSON inválido, o que pasa el límite) hace que Express conteste
+  // su página de error HTML CON STACK TRACE: la UI espera JSON y revienta con
+  // "Unexpected token '<'", y de paso se filtran rutas internas del servidor.
+  // Este handler traduce esos errores a JSON antes de que lleguen a las rutas.
+  app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!err) return next();
+    const status = Number(err.status) || 400;
+    const error = err.type === 'entity.too.large'
+      ? 'El mensaje es demasiado grande (máximo 25 MB).'
+      : 'El cuerpo de la petición no es JSON válido.';
+    if (res.headersSent) return next(err);
+    return res.status(status).json({ error });
+  });
+
   // Autenticación por token en TODO /api/*. Solo la UI de la app (que recibe el
   // token inyectado en el HTML) puede llamar al agente. Sin token (dev) se saltea.
   app.use('/api', (req, res, next) => {

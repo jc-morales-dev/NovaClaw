@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover habilita env(safe-area-inset-*): sin esto esas
+         variables valen 0 y el contenido de los bordes queda debajo de la barra
+         de gestos de Android (el pie del chat se veía tapado). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>NovaClaw</title>
   </head>
   <body>

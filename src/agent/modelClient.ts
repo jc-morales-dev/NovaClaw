@@ -19,8 +19,23 @@ const ANTHROPIC_VERSION = '2023-06-01';
 // tokens de pensamiento + salida alta. Los proveedores OpenAI-compatible
 // gestionan su propio razonamiento internamente.
 const ANTHROPIC_THINKING_BUDGET = 4096;
+// Sin streaming hay que quedarse bajo el timeout HTTP del SDK; con streaming no
+// existe ese techo y los modelos actuales llegan a 128K de salida. Pedir de más
+// no cuesta nada: solo se paga lo que el modelo realmente escribe.
 const ANTHROPIC_MAX_TOKENS = 16384;
+const ANTHROPIC_MAX_TOKENS_STREAM = 64000;
 const OPENAI_MAX_TOKENS = 8192;
+
+/** Cuánto "piensa" el modelo. Es el control principal de costo/calidad en los
+ *  modelos actuales de Anthropic: bajarlo achica el gasto por mensaje a cambio
+ *  de menos profundidad. 'high' es el default de la API si no se manda nada. */
+export type ModelEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+/** El parámetro `effort` existe desde Opus 4.5; en modelos previos (Sonnet 4.5,
+ *  Haiku 4.5) devuelve 400, así que solo se manda donde está soportado. */
+function supportsEffort(model: string): boolean {
+  return /(opus-4[-.][5678]|sonnet-4[-.]6|sonnet-5|fable-5|mythos-5)\b/.test(model.toLowerCase());
+}
 
 /** Media adjunta a un mensaje (modelos multimodales: cámara, screenshots, audio).
  *  Se llama AgentImage por retrocompat, pero `kind` distingue imagen/audio/video. */
@@ -154,12 +169,152 @@ async function fetchWithRetry(
   }
 }
 
+// ── Respuesta de Anthropic → ModelReply ─────────────────────────────────────
+/**
+ * Arma el ModelReply desde los bloques de contenido. Compartido por el camino
+ * con streaming y el sin streaming, así los dos entregan EXACTAMENTE lo mismo
+ * (incluido rawContent con los bloques thinking firmados, que la API exige
+ * devolver intactos en el turno siguiente).
+ *
+ * `stop_reason: 'refusal'` significa que los clasificadores de seguridad
+ * frenaron la respuesta: llega HTTP 200 con content vacío o a medias. Sin este
+ * caso el usuario veía una burbuja en blanco y parecía que la app se colgó.
+ */
+function buildAnthropicReply(
+  blocks: any[],
+  usage: ModelUsage | undefined,
+  stopReason?: string,
+  stopDetails?: any,
+): ModelReply {
+  let text = blocks.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join('').trim();
+  const toolCalls = blocks
+    .filter((b) => b?.type === 'tool_use')
+    .map((b) => ({ id: b.id, name: b.name, args: b.input ?? {} }));
+
+  if (stopReason === 'refusal') {
+    const motivo = stopDetails?.category ? ` (categoría: ${stopDetails.category})` : '';
+    const aviso = `⚠️ El modelo rechazó esta petición por sus filtros de seguridad${motivo}. Probá reformularla, o cambiá de modelo en Ajustes → Proveedor de IA.`;
+    text = text ? `${text}\n\n${aviso}` : aviso;
+  }
+
+  return {
+    text: text || undefined,
+    toolCalls: toolCalls.length ? toolCalls : undefined,
+    rawContent: blocks.length ? blocks : undefined,
+    usage,
+  };
+}
+
+/**
+ * Lee el SSE de /v1/messages de Anthropic. Reconstruye cada content block tal
+ * cual lo devolvería la llamada sin streaming — incluida la `signature` de los
+ * bloques thinking, que viaja en signature_delta y sin la cual el turno
+ * siguiente es rechazado. Por eso este camino puede streamear sin romper el
+ * replay de thinking: no perdemos nada, lo re-ensamblamos entero.
+ */
+async function readAnthropicStream(res: Response, onTextDelta?: (delta: string) => void): Promise<ModelReply> {
+  const reader = res.body?.getReader?.();
+  if (!reader) {
+    // Algún proxy no streamea: caemos al parseo JSON normal.
+    const data = await res.json();
+    return buildAnthropicReply(data.content ?? [], parseAnthropicUsage(data.usage), data.stop_reason, data.stop_details);
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const blocks: any[] = [];
+  const jsonAcc: Record<number, string> = {};
+  let usage: ModelUsage | undefined;
+  let stopReason: string | undefined;
+  let stopDetails: any;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (!payload) continue;
+      let ev: any;
+      try { ev = JSON.parse(payload); } catch { continue; }
+
+      switch (ev.type) {
+        case 'message_start':
+          usage = parseAnthropicUsage(ev.message?.usage) ?? usage;
+          break;
+        case 'content_block_start':
+          blocks[ev.index] = { ...ev.content_block };
+          if (ev.content_block?.type === 'tool_use') jsonAcc[ev.index] = '';
+          break;
+        case 'content_block_delta': {
+          const b = blocks[ev.index];
+          const d = ev.delta;
+          if (!b || !d) break;
+          if (d.type === 'text_delta') {
+            b.text = (b.text ?? '') + d.text;
+            try { onTextDelta?.(d.text); } catch { /* un sink roto no frena el stream */ }
+          } else if (d.type === 'thinking_delta') {
+            b.thinking = (b.thinking ?? '') + d.thinking;
+          } else if (d.type === 'signature_delta') {
+            b.signature = (b.signature ?? '') + d.signature;
+          } else if (d.type === 'input_json_delta') {
+            jsonAcc[ev.index] = (jsonAcc[ev.index] ?? '') + (d.partial_json ?? '');
+          }
+          break;
+        }
+        case 'content_block_stop': {
+          const b = blocks[ev.index];
+          if (b?.type === 'tool_use') {
+            try { b.input = JSON.parse(jsonAcc[ev.index] || '{}'); } catch { b.input = {}; }
+          }
+          break;
+        }
+        case 'message_delta':
+          if (ev.delta?.stop_reason) stopReason = ev.delta.stop_reason;
+          if (ev.delta?.stop_details) stopDetails = ev.delta.stop_details;
+          if (ev.usage?.output_tokens != null) {
+            usage = { ...(usage ?? {}), outputTokens: ev.usage.output_tokens };
+          }
+          break;
+        case 'error':
+          throw new Error(`Anthropic: ${ev.error?.message ?? 'error en el stream'}`);
+        default:
+          break;
+      }
+    }
+  }
+
+  const reply = buildAnthropicReply(blocks.filter(Boolean), usage, stopReason, stopDetails);
+  // El túnel se puede caer con un 200 ya emitido y cero eventos detrás (pasa en
+  // redes móviles). Sin esto el chat mostraba una burbuja vacía y el usuario no
+  // distinguía "se cortó la red" de "la app se colgó". Solo aplica al camino con
+  // streaming: es el del chat. El generador de títulos no streamea y conserva su
+  // propio fallback, así que nunca termina con este aviso de título.
+  if (!reply.text && !reply.toolCalls) {
+    return { ...reply, text: '⚠️ La respuesta llegó vacía (probablemente se cortó la conexión). Probá de nuevo.' };
+  }
+  return reply;
+}
+
 // ── Prompt caching de Anthropic (B1) ────────────────────────────────────────
 /** Claude 4.6+ / Sonnet 5 / Fable 5 usan adaptive thinking; el viejo
  *  budget_tokens los hace fallar con 400 (por eso Opus 4.8 corría SIN pensar).
  *  Los previos (Haiku 4.5, Sonnet 4.5…) siguen con budget_tokens. */
 function supportsAdaptiveThinking(model: string): boolean {
   return /(opus-4-[678]|sonnet-4-6|sonnet-5|fable-5|mythos-5)\b/.test(model.toLowerCase());
+}
+
+/** Claude Opus 4.7+, Sonnet 5, Fable 5 y Mythos 5 ELIMINARON temperature/top_p/top_k:
+ *  mandarlos devuelve 400 y el chat muere. Pasa por el camino OpenAI-compatible
+ *  (OpenRouter sirve varios de estos y nuestro catálogo curado los ofrece), donde
+ *  siempre mandábamos temperature: 0.2. OpenRouter escribe la versión con punto
+ *  (claude-opus-4.8) y la API nativa con guion (claude-opus-4-8): matcheamos ambas. */
+function rejectsSamplingParams(model: string): boolean {
+  return /(opus-4[-.][78]|sonnet-5|fable-5|mythos-5)\b/.test(model.toLowerCase());
 }
 
 // Modelos que ya devolvieron 400 por thinking: en el loop agéntico se llama al
@@ -192,6 +347,28 @@ function parseOpenAIUsage(u: any): ModelUsage | undefined {
   };
 }
 
+/**
+ * Una respuesta sin texto NI tool calls dejaba una burbuja vacía en el chat: el
+ * usuario no distinguía "el modelo se negó" de "la app se colgó". finish_reason
+ * dice por qué se cortó; lo traducimos a algo accionable. Devuelve undefined
+ * cuando el corte es normal (el llamador ya tiene texto o herramientas).
+ */
+function explainEmptyReply(finishReason?: string): string | undefined {
+  switch (finishReason) {
+    case 'content_filter':
+      return '⚠️ El filtro de contenido del proveedor bloqueó la respuesta. Probá reformular la petición, o cambiá de modelo en Ajustes → Proveedor de IA.';
+    case 'length':
+      return '⚠️ La respuesta se cortó por el límite de tokens. Pedí el resultado en partes.';
+    case 'stop':
+    case 'end_turn':
+      return '⚠️ El modelo devolvió una respuesta vacía. Probá de nuevo o cambiá de modelo en Ajustes → Proveedor de IA.';
+    default:
+      return finishReason
+        ? `⚠️ El modelo cortó la respuesta (${finishReason}) sin devolver texto. Probá de nuevo o cambiá de modelo.`
+        : undefined;
+  }
+}
+
 // ── Streaming SSE del camino OpenAI (B10) ────────────────────────────────────
 /**
  * Lee el stream de /chat/completions (formato OpenAI), acumula texto y tool_calls
@@ -221,6 +398,7 @@ async function readOpenAIStream(res: Response, onTextDelta?: (delta: string) => 
   let buffer = '';
   let content = '';
   let usage: ModelUsage | undefined;
+  let finishReason: string | undefined;
   const toolAcc: Record<number, { id?: string; name?: string; args: string }> = {};
 
   for (;;) {
@@ -238,6 +416,7 @@ async function readOpenAIStream(res: Response, onTextDelta?: (delta: string) => 
       try { chunk = JSON.parse(payload); } catch { continue; }
       // Con stream_options.include_usage, el chunk final trae usage (choices vacío).
       if (chunk.usage) usage = parseOpenAIUsage(chunk.usage) ?? usage;
+      if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
       const delta = chunk.choices?.[0]?.delta;
       if (!delta) continue;
       if (typeof delta.content === 'string' && delta.content) {
@@ -262,7 +441,9 @@ async function readOpenAIStream(res: Response, onTextDelta?: (delta: string) => 
     })
     .filter((t) => t.name);
   const text = content.trim();
-  return { text: text || undefined, toolCalls: toolCalls.length ? toolCalls : undefined, usage };
+  // Sin texto y sin herramientas el chat mostraba una burbuja vacía: explicamos por qué.
+  const fallback = toolCalls.length ? undefined : explainEmptyReply(finishReason);
+  return { text: text || fallback, toolCalls: toolCalls.length ? toolCalls : undefined, usage };
 }
 
 /** Marca el último bloque del último mensaje con cache_control, para cachear el
@@ -684,6 +865,9 @@ export async function callModelWithTools(input: {
   abortSignal?: AbortSignal;
   /** Llamada de texto puro (sin tools ni thinking): p.ej. generar un título. */
   noTools?: boolean;
+  /** Profundidad de razonamiento (Anthropic). Sin esto la API asume 'high' y
+   *  se paga el máximo en cada mensaje. Se ignora donde no está soportado. */
+  effort?: ModelEffort;
   /** B10: si viene, el camino OpenAI-compatible streamea y llama esto por cada
    *  fragmento de texto (para escribir la respuesta en vivo). Anthropic NO
    *  streamea (protege el replay de thinking) y este callback no se usa ahí. */
@@ -752,7 +936,11 @@ export async function callModelWithTools(input: {
   const headers = authHeaders(input.providerId, input.apiKey);
 
   if (provider.apiFormat === 'anthropic') {
-    const maxTokens = input.maxTokens ?? ANTHROPIC_MAX_TOKENS;
+    // B12: Anthropic ya streamea. Reconstruimos los bloques enteros (incluida la
+    // firma del thinking), así que el replay del turno siguiente sigue intacto.
+    const streamAnthropic = typeof input.onTextDelta === 'function';
+    const maxTokens = input.maxTokens
+      ?? (streamAnthropic ? ANTHROPIC_MAX_TOKENS_STREAM : ANTHROPIC_MAX_TOKENS);
     // El resumen/título es one-off: cachearlo sería puro costo de escritura sin lecturas.
     const useCache = !noTools;
     const adaptive = supportsAdaptiveThinking(input.model);
@@ -775,6 +963,12 @@ export async function callModelWithTools(input: {
         messages,
       };
       if (!noTools) body.tools = toAnthropicTools(exclude, extra);
+      if (streamAnthropic) body.stream = true;
+      // Control de gasto: sin esto la API asume 'high' y se paga el máximo en
+      // cada mensaje. Va dentro de output_config, no al nivel raíz.
+      if (input.effort && supportsEffort(input.model)) {
+        body.output_config = { effort: input.effort };
+      }
       let callHeaders = headers;
       if (withThinking && !noTools) {
         if (adaptive) {
@@ -806,18 +1000,14 @@ export async function callModelWithTools(input: {
       }
     }
     if (!res.ok) throw new Error(`Anthropic ${res.status}: ${await res.text()}`);
+    if (streamAnthropic) return readAnthropicStream(res, input.onTextDelta);
     const data = await res.json();
-    const blocks: any[] = data.content ?? [];
-    const text = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
-    const toolCalls = blocks
-      .filter((b) => b.type === 'tool_use')
-      .map((b) => ({ id: b.id, name: b.name, args: b.input ?? {} }));
-    return {
-      text: text || undefined,
-      toolCalls: toolCalls.length ? toolCalls : undefined,
-      rawContent: blocks.length ? blocks : undefined,
-      usage: parseAnthropicUsage(data.usage),
-    };
+    return buildAnthropicReply(
+      data.content ?? [],
+      parseAnthropicUsage(data.usage),
+      data.stop_reason,
+      data.stop_details,
+    );
   }
 
   // Formato OpenAI-compatible
@@ -832,9 +1022,10 @@ export async function callModelWithTools(input: {
     const body: Record<string, any> = {
       model: input.model,
       messages: toOpenAIMessages(input.system, input.messages, withCache),
-      temperature: 0.2,
       max_tokens: maxTokens,
     };
+    // Los modelos que quitaron el sampling devuelven 400 si viaja temperature.
+    if (!rejectsSamplingParams(input.model)) body.temperature = 0.2;
     if (!noTools) {
       body.tools = toOpenAITools(exclude, extra);
       body.tool_choice = 'auto';
@@ -870,7 +1061,8 @@ export async function callModelWithTools(input: {
     return readOpenAIStream(res, input.onTextDelta);
   }
   const data = await res.json();
-  const message = data.choices?.[0]?.message ?? {};
+  const choice = data.choices?.[0] ?? {};
+  const message = choice.message ?? {};
   const text = (message.content ?? '').trim();
   const toolCalls = (message.tool_calls ?? []).map((tc: any) => {
     let args: Record<string, any> = {};
@@ -878,7 +1070,7 @@ export async function callModelWithTools(input: {
     return { id: tc.id, name: tc.function?.name, args };
   });
   return {
-    text: text || undefined,
+    text: text || explainEmptyReply(choice.finish_reason),
     toolCalls: toolCalls.length ? toolCalls : undefined,
     usage: parseOpenAIUsage(data.usage),
   };

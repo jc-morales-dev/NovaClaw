@@ -133,16 +133,98 @@ test('OpenAI streaming: onTextDelta + acumula texto y tool_calls', async () => {
   } finally { restore(); }
 });
 
-// ── B10: Anthropic NO streamea (protege el replay de thinking) ────────────────
-test('Anthropic ignora onTextDelta (no streamea)', async () => {
-  const { calls, restore } = stubFetch([fakeRes(200, anthropicOk)]);
+// ── B12: Anthropic SÍ streamea y re-ensambla los bloques enteros ─────────────
+// El riesgo del streaming era perder la `signature` de los bloques thinking:
+// sin ella la API rechaza el turno siguiente. Este test la persigue de punta a
+// punta, junto con los tool_use armados desde input_json_delta.
+test('Anthropic streaming: emite deltas y reconstruye thinking firmado + tool_use', async () => {
+  const { calls, restore } = stubFetch([sseRes([
+    sse({ type: 'message_start', message: { usage: { input_tokens: 12, cache_read_input_tokens: 4 } } }),
+    sse({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } }),
+    sse({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'pienso' } }),
+    sse({ type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'FIRMA123' } }),
+    sse({ type: 'content_block_stop', index: 0 }),
+    sse({ type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } }),
+    sse({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Hola ' } }),
+    sse({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'mundo' } }),
+    sse({ type: 'content_block_stop', index: 1 }),
+    sse({ type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: 'tu_1', name: 'terminal_run' } }),
+    sse({ type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: '{"comm' } }),
+    sse({ type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: 'and":"ls"}' } }),
+    sse({ type: 'content_block_stop', index: 2 }),
+    sse({ type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 30 } }),
+  ])]);
   try {
     const deltas = [];
-    const reply = await callModelWithTools({ ...baseInput, providerId: 'anthropic', model: 'claude-opus-4-8', onTextDelta: (d) => deltas.push(d) });
-    assert.equal(deltas.length, 0, 'Anthropic no debe emitir deltas');
-    assert.equal(reply.text, 'listo');
-    assert.equal(calls[0].body.stream, undefined, 'el body de Anthropic no lleva stream');
+    const reply = await callModelWithTools({
+      ...baseInput, providerId: 'anthropic', model: 'claude-opus-4-8',
+      onTextDelta: (d) => deltas.push(d),
+    });
+    assert.equal(calls[0].body.stream, true, 'el request debe pedir stream:true');
+    assert.deepEqual(deltas, ['Hola ', 'mundo'], 'emite cada fragmento de texto en vivo');
+    assert.equal(reply.text, 'Hola mundo');
+
+    const thinking = reply.rawContent?.find((b) => b.type === 'thinking');
+    assert.equal(thinking?.thinking, 'pienso');
+    assert.equal(thinking?.signature, 'FIRMA123', 'la firma del thinking DEBE sobrevivir al stream');
+
+    assert.equal(reply.toolCalls?.[0]?.name, 'terminal_run');
+    assert.deepEqual(reply.toolCalls?.[0]?.args, { command: 'ls' }, 'arma los args desde input_json_delta');
+    assert.equal(reply.usage?.inputTokens, 12);
+    assert.equal(reply.usage?.cacheReadTokens, 4);
+    assert.equal(reply.usage?.outputTokens, 30);
   } finally { restore(); }
+});
+
+// Sin onTextDelta (p.ej. el generador de títulos) se mantiene el camino JSON.
+test('Anthropic sin onTextDelta: no pide stream', async () => {
+  const { calls, restore } = stubFetch([fakeRes(200, anthropicOk)]);
+  try {
+    const reply = await callModelWithTools({ ...baseInput, providerId: 'anthropic', model: 'claude-opus-4-8' });
+    assert.equal(reply.text, 'listo');
+    assert.equal(calls[0].body.stream, undefined, 'sin sink de deltas no tiene sentido streamear');
+  } finally { restore(); }
+});
+
+// El rechazo por filtros llega como HTTP 200 con content vacío: antes dejaba
+// una burbuja en blanco y parecía que la app se había colgado.
+test('Anthropic refusal: explica el rechazo en vez de devolver vacío', async () => {
+  const { restore } = stubFetch([fakeRes(200, { content: [], stop_reason: 'refusal', stop_details: { category: 'cyber' } })]);
+  try {
+    const reply = await callModelWithTools({ ...baseInput, providerId: 'anthropic', model: 'claude-opus-4-8' });
+    assert.match(reply.text ?? '', /rechaz/i, 'debe avisar que el modelo rechazó la petición');
+    assert.match(reply.text ?? '', /cyber/, 'incluye la categoría que informó la API');
+  } finally { restore(); }
+});
+
+// effort: control de gasto. Solo donde el modelo lo soporta.
+test('effort viaja en output_config y se omite en modelos que no lo soportan', async () => {
+  const a = stubFetch([fakeRes(200, anthropicOk)]);
+  try {
+    await callModelWithTools({ ...baseInput, providerId: 'anthropic', model: 'claude-opus-4-8', effort: 'medium' });
+    assert.deepEqual(a.calls[0].body.output_config, { effort: 'medium' });
+  } finally { a.restore(); }
+
+  const b = stubFetch([fakeRes(200, anthropicOk)]);
+  try {
+    await callModelWithTools({ ...baseInput, providerId: 'anthropic', model: 'claude-haiku-4-5', effort: 'medium' });
+    assert.equal(b.calls[0].body.output_config, undefined, 'Haiku 4.5 devuelve 400 si le mandás effort');
+  } finally { b.restore(); }
+});
+
+// Los modelos que eliminaron el sampling devuelven 400 si viaja temperature.
+test('temperature se omite en Opus 4.8 / Sonnet 5 y se mantiene en el resto', async () => {
+  const a = stubFetch([fakeRes(200, openaiOk)]);
+  try {
+    await callModelWithTools({ ...baseInput, providerId: 'openrouter', model: 'anthropic/claude-opus-4.8' });
+    assert.equal(a.calls[0].body.temperature, undefined, 'Opus 4.8 vía OpenRouter no acepta temperature');
+  } finally { a.restore(); }
+
+  const b = stubFetch([fakeRes(200, openaiOk)]);
+  try {
+    await callModelWithTools({ ...baseInput, providerId: 'nvidia', model: 'minimaxai/minimax-m3' });
+    assert.equal(b.calls[0].body.temperature, 0.2, 'el resto conserva el sampling de siempre');
+  } finally { b.restore(); }
 });
 
 // ── B1: llamada sin tools (título/resumen) NO cachea (evita escritura inútil) ─

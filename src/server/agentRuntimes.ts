@@ -54,7 +54,7 @@ export const localAgentRuntime = createAgentRuntime({
 // que el agente se sienta como Codex/Claude Code: encadena herramientas reales.
 export const nativeAgentRuntime = createNativeAgentRuntime({
   workspaceRoot: DEFAULT_CWD,
-  getConfig: () => ({ providerId: zenConfig.provider, apiKey: zenConfig.apiKey, model: zenConfig.model }),
+  getConfig: () => ({ providerId: zenConfig.provider, apiKey: zenConfig.apiKey, model: zenConfig.model, effort: zenConfig.effort }),
   executeToolCall: sharedExecutor,
   getMcpTools: () => mcpManager.listTools(),
   callMcpTool: (name, args) => mcpManager.call(name, args),

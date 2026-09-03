@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --target=node18 --outfile=dist/server.cjs --format=cjs --external:express --external:pino",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --target=node18 --outfile=dist/server.cjs --format=cjs --external:express --external:pino --external:vite --external:bufferutil --external:utf-8-validate",
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
@@ -20,7 +20,6 @@
   },
   "dependencies": {
     "@capacitor/android": "^8.3.1",
-    "@capacitor/cli": "^8.3.1",
     "@capacitor/core": "^8.3.1",
     "@tailwindcss/typography": "^0.5.19",
     "@tailwindcss/vite": "^4.1.14",
@@ -44,6 +43,7 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.3.1",
     "@types/express": "^4.17.25",
     "@types/node": "^22.14.0",
     "@types/ws": "^8.18.1",

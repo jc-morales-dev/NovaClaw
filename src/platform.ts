@@ -36,8 +36,10 @@ export type SessionHistoryEntry = { role: 'user' | 'assistant' | 'system'; conte
 export type PendingApprovalSnapshot = { summary: string; reason: string; toolCall: { tool: string; arguments: Record<string, unknown> } } | null;
 type ChatHistoryResponse = { history: SessionHistoryEntry[]; pendingApproval: PendingApprovalSnapshot };
 
-export type ProviderConfig = { provider: string; baseUrl: string; model: string; hasApiKey: boolean; mode: 'remote' | 'local' };
-export type ProviderConfigUpdate = { provider?: string; baseUrl?: string; model?: string; apiKey?: string };
+/** Cuánto piensa el modelo: menos esfuerzo = menos tokens = más barato. */
+export type ModelEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type ProviderConfig = { provider: string; baseUrl: string; model: string; effort?: ModelEffort; hasApiKey: boolean; mode: 'remote' | 'local' };
+export type ProviderConfigUpdate = { provider?: string; baseUrl?: string; model?: string; apiKey?: string; effort?: ModelEffort };
 export type ProviderInfo = { id: string; label: string; needsKey: boolean; keyHint: string; note: string | null };
 export type ModelInfo = { id: string; label: string; tier?: 'premium' | 'value' };
 export type VerifyResult = { ok: boolean; models: ModelInfo[]; error?: string };

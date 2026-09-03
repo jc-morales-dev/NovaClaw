@@ -40,7 +40,7 @@ export default function LogViewer() {
 
   return (
     <div className="flex flex-col h-full bg-zinc-950 text-zinc-100 font-sans relative">
-      <div className="flex items-center justify-between px-4 pt-12 pb-4 sticky top-0 bg-zinc-950/80 backdrop-blur-xl z-20 border-b border-zinc-900 shadow-sm">
+      <div className="flex items-center justify-between px-4 pt-12 pb-4 sticky top-0 bg-zinc-950/95 z-20 border-b border-zinc-900 shadow-sm">
         <div className="flex items-center gap-1">
           <button 
             onClick={() => navigate(-1)}

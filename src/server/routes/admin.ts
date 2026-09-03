@@ -15,7 +15,7 @@ import {
   codexPlanType,
   type CodexDeviceStart,
 } from '../../agent/openaiCodexAuth';
-import { saveConfigToFile, syncBaseUrlToProvider, zenConfig } from '../config';
+import { EFFORT_VALUES, saveConfigToFile, syncBaseUrlToProvider, zenConfig } from '../config';
 import { getRuntimeSnapshot, runtimeState, startAgentRuntime, systemLogs } from '../state';
 import { MCP_CONFIG_PATH, mcpManager, readMcpConfig, reconnectMcp, saveMcpSecretDev, writeMcpConfig } from '../mcpRegistry';
 import { isOpenCodeBusy, refreshOpenCodeAvailability, startOpenCodeRuntime, stopOpenCodeRuntime } from '../opencode';
@@ -305,13 +305,14 @@ export function registerAdminRoutes(app: Express) {
       provider: zenConfig.provider,
       baseUrl: zenConfig.baseUrl,
       model: zenConfig.model,
+      effort: zenConfig.effort,
       hasApiKey: !!zenConfig.apiKey,
       mode: zenConfig.apiKey ? 'remote' : 'local',
     });
   });
 
   app.post('/api/config', (req, res) => {
-    const { provider, baseUrl, apiKey, model } = req.body ?? {};
+    const { provider, baseUrl, apiKey, model, effort } = req.body ?? {};
     // Solo se actualizan los campos provistos. Un apiKey === '' limpia la key.
     if (typeof provider === 'string' && provider.trim() && getProvider(provider.trim())) {
       zenConfig.provider = provider.trim();
@@ -320,6 +321,7 @@ export function registerAdminRoutes(app: Express) {
     if (typeof baseUrl === 'string' && baseUrl.trim()) zenConfig.baseUrl = baseUrl.trim();
     if (typeof model === 'string' && model.trim()) zenConfig.model = model.trim();
     if (typeof apiKey === 'string') zenConfig.apiKey = apiKey.trim();
+    if (EFFORT_VALUES.includes(effort)) zenConfig.effort = effort;
 
     try {
       saveConfigToFile();
@@ -338,6 +340,7 @@ export function registerAdminRoutes(app: Express) {
       provider: zenConfig.provider,
       baseUrl: zenConfig.baseUrl,
       model: zenConfig.model,
+      effort: zenConfig.effort,
       hasApiKey: !!zenConfig.apiKey,
       mode: zenConfig.apiKey ? 'remote' : 'local',
     });

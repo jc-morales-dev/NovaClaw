@@ -59,13 +59,23 @@ android {
                 storePassword = keystoreProps["storePassword"] as String
                 keyAlias = keystoreProps["keyAlias"] as String
                 keyPassword = keystoreProps["keyPassword"] as String
+                // v3 permite ROTAR la clave si algún día se compromete, sin
+                // perder la identidad de la app. v1 no aplica: minSdk es 24.
+                enableV2Signing = true
+                enableV3Signing = true
             }
         }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8: achica y ofusca. Lo que se resuelve por reflexión o por nombre
+            // (Shizuku, clases del manifest, @JavascriptInterface) está protegido
+            // en proguard-rules.pro — sin esas reglas la app compila igual y
+            // revienta recién en el teléfono.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = if (keystorePropsFile.exists()) {
                 signingConfigs.getByName("release")
             } else {

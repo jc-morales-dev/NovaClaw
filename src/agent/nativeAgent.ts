@@ -308,8 +308,9 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
           messages,
           abortSignal: signal,
           extraTools: mcpExtraTools(),
-          // B10: streaming en vivo (solo camino OpenAI). Cada fragmento se emite
-          // como messageDelta; la UI lo escribe y el 'message' final lo cierra.
+          effort: cfg.effort,
+          // B10/B12: streaming en vivo (OpenAI y Anthropic). Cada fragmento se
+          // emite como messageDelta; la UI lo escribe y el 'message' final cierra.
           onTextDelta: (delta) => { events.push({ type: 'messageDelta', delta }); },
         });
         addUsage(reply.usage);
@@ -537,11 +538,11 @@ export function createNativeAgentRuntime(options: NativeRuntimeOptions) {
       });
 
       // Auto = omitir permisos; o si el usuario ya aprobó "siempre" esta tool.
-      // Excepción innegociable: las decisiones mandatory (ejecución de código)
-      // preguntan siempre, aunque el usuario esté en auto o haya dicho "siempre".
+      // En auto no se pregunta NADA (ver runtime.ts para el porqué). El
+      // "permitir siempre" sí tiene tope: no habilita ejecutar código.
       const needsApproval = decision.requiresApproval
-        && (decision.mandatory
-          || (turnMode !== 'auto' && !(session.autoApproveTools ?? []).includes(call.tool)));
+        && turnMode !== 'auto'
+        && (decision.mandatory || !(session.autoApproveTools ?? []).includes(call.tool));
       if (needsApproval) {
         session.pendingApproval = { toolCall: call, summary: decision.summary, reason: decision.reason };
         (session as any).native = { messages, batch, nextIndex: i, mode: turnMode } as NativeResume;

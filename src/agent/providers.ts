@@ -71,6 +71,17 @@ export const PROVIDERS: ProviderDef[] = [
     keyHint: 'Tu key de NVIDIA (build.nvidia.com). Muchos modelos con nivel free.',
   },
   {
+    id: 'google',
+    label: 'Google (Gemini)',
+    // Google expone una capa compatible con OpenAI, así que Gemini entra por el
+    // mismo camino que el resto: /chat/completions y /models con Bearer.
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    apiFormat: 'openai',
+    modelsPath: '/models',
+    needsKey: true,
+    keyHint: 'Tu key de Google AI Studio (aistudio.google.com/apikey). Gemini es el único que ESCUCHA audio; tiene nivel free.',
+  },
+  {
     id: 'openai-codex',
     label: 'OpenAI Codex (cuenta ChatGPT)',
     // Backend de Codex para cuentas ChatGPT: habla la Responses API, no

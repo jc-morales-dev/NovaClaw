@@ -1088,6 +1088,9 @@ export default function ChatView() {
     setMessages(createWelcomeMessage(t.welcomeMessage));
     setInput('');
     setIsHistoryOpen(false);
+    // El modo vale para ESTA conversación. Auto no se hereda: si no, se queda
+    // encendido de un chat viejo y el agente trabaja solo sin que te acuerdes.
+    setMode('build');
   };
 
   // Abre una conversación guardada: activa su sessionId y carga sus mensajes.
@@ -1098,6 +1101,7 @@ export default function ChatView() {
     setMessages(loadMessagesFor(sid, t.welcomeMessage));
     setInput('');
     setIsHistoryOpen(false);
+    setMode('build');  // el modo no viaja entre conversaciones (ver startNewChat)
   };
 
   // Elimina una conversación: del historial, de localStorage y del server.
@@ -1169,7 +1173,7 @@ export default function ChatView() {
       </div>
 
       {/* Header minimalista */}
-      <header className="flex items-center justify-between px-2.5 pt-11 pb-3 sticky top-0 bg-[#0B0908]/85 backdrop-blur-xl z-20 border-b border-white/5">
+      <header className="flex items-center justify-between px-2.5 pt-11 pb-3 sticky top-0 bg-[#0B0908]/95 z-20 border-b border-white/5">
         <button onClick={() => navigate('/')} className="p-2 text-zinc-400 hover:text-zinc-100 transition-colors rounded-full">
           <ArrowLeft size={22} />
         </button>
@@ -1349,7 +1353,9 @@ export default function ChatView() {
       )}
 
       {/* Composer */}
-      <div className="px-3 pt-2 pb-7 bg-gradient-to-t from-[#0B0908] via-[#0B0908] to-transparent">
+      {/* pb-safe en vez de pb-7 fijo: la barra de gestos de Android tapaba el
+          aviso de "puede cometer errores" en pantallas sin botones físicos. */}
+      <div className="px-3 pt-2 pb-safe bg-gradient-to-t from-[#0B0908] via-[#0B0908] to-transparent">
         {/* Menú de comandos slash (aparece al escribir "/") */}
         {input.startsWith('/') && !isTyping && (
           <div className="mb-2 rounded-2xl bg-zinc-900/95 border border-white/10 overflow-hidden shadow-xl">

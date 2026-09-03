@@ -333,11 +333,15 @@ export function createAgentRuntime(options: RuntimeOptions) {
 
       // Auto = omitir permisos; o si el usuario ya aprobó "siempre" esta tool.
       // Auto y "permitir siempre" saltan la aprobación… salvo las decisiones
-      // marcadas mandatory (ejecución de código): ahí un sí a ciegas vale por
-      // acceso total al teléfono, así que se pregunta igual, todas las veces.
+      // AUTO no pregunta nada. Es su razón de ser: el usuario da el permiso una
+      // vez, al elegir el modo, y el agente trabaja solo hasta que lo cambie.
+      //
+      // "Permitir siempre" es distinto: es un clic dentro de un diálogo, fácil
+      // de dar sin leer. Por eso NO cubre las decisiones mandatory (ejecutar
+      // código): para eso está auto, que se elige a propósito.
       const needsApproval = decision.requiresApproval
-        && (decision.mandatory
-          || (turnMode !== 'auto' && !(session.autoApproveTools ?? []).includes(action.tool)));
+        && turnMode !== 'auto'
+        && (decision.mandatory || !(session.autoApproveTools ?? []).includes(action.tool));
       if (needsApproval) {
         session.pendingApproval = {
           toolCall: action,

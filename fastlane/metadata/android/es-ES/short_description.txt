@@ -1,0 +1,1 @@
+Agente de IA para programar y manejar tu teléfono, con tu propia API key.

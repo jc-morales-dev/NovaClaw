@@ -1,0 +1,11 @@
+Primera versión pública.
+
+• Agente de programación con verificación real: edita el código y lo pasa por el compilador o el linter antes de darlo por bueno.
+• Investigación web con múltiples fuentes y citas.
+• Acceso al teléfono: contactos, calendario, ubicación, apps y cámara, siempre con permiso explícito.
+• Lectura de PDF, Word, Excel, PowerPoint y ZIP.
+• Terminal Linux completa dentro de la app.
+• Proveedores: Anthropic, OpenAI, Google Gemini, OpenRouter, NVIDIA y OpenCode Zen.
+• Login con cuenta de ChatGPT, sin API key.
+• Control de gasto: elegís cuánto piensa el modelo.
+• Servidores MCP para agregar herramientas externas.
