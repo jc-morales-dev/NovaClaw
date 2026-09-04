@@ -17,6 +17,18 @@ phone capabilities (camera, GPS, contacts, calendar) — all on-device, BYOK.
   <a href="docs/media/novaclaw-demo.mp4">novaclaw-demo.mp4</a> (57 s).</em>
 </p>
 
+<p align="center">
+  <img src="docs/media/screenshot-home.png" alt="Home screen: agent status, Linux and Node health checks, and the Terminal module" width="270" />
+  &nbsp;&nbsp;
+  <img src="docs/media/screenshot-terminal.png" alt="The built-in terminal running uname -a and node --version: a real Linux kernel and Node 20 on the phone" width="270" />
+</p>
+
+<p align="center">
+  <em>Left: the app's home screen. Right: the built-in PTY terminal — that's a
+  real Linux kernel (<code>aarch64 GNU/Linux</code>) and Node 20 running on the
+  phone, not a remote shell.</em>
+</p>
+
 > **Status: v0.1.0 — early. Tested by one person, on one phone.** It works and
 > the APK is signed, but the only hardware it has ever run on is a single OPPO
 > CPH2557 (Android 15, arm64), tested by the author. Nobody else has used it
