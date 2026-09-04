@@ -78,7 +78,9 @@ jobs:
 
       - name: Assemble APK (arm64, targetSdk 34)
         working-directory: android-native
-        run: ./gradlew :app:assembleArm64Release --no-daemon
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleArm64Release --no-daemon
 
       - name: Locate APK
         id: apk
