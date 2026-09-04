@@ -38,6 +38,8 @@ phone capabilities (camera, GPS, contacts, calendar) — all on-device, BYOK.
 > native lib) so it executes binaries without root and without depending on the
 > old `targetSdk 28` trick. See [docs/PROOT_TARGETSDK.md](docs/PROOT_TARGETSDK.md).
 > A legacy `targetSdk 28` build (direct exec) is still available as a fallback.
+> See the live [device compatibility matrix](docs/DEVICE_COMPATIBILITY.md) and
+> use the device-report issue form before claiming support for more hardware.
 
 **Install:** see [docs/INSTALL.md](docs/INSTALL.md) (non-technical guide).
 
