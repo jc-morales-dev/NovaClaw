@@ -68,7 +68,7 @@ export function confirmBiometric(title: string, subtitle: string): Promise<boole
       window.removeEventListener('novaclaw-biometric-result', onResult as EventListener);
       resolve(false);
     }, 60000);
-    try { b.confirmWithBiometric(requestId, title, subtitle); }
+    try { b.confirmWithBiometric?.(requestId, title, subtitle); }
     catch { window.removeEventListener('novaclaw-biometric-result', onResult as EventListener); resolve(true); }
   });
 }

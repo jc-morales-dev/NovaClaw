@@ -1,5 +1,7 @@
 # NovaClaw
 
+[![CI](https://github.com/jc-morales-dev/NovaClaw/actions/workflows/ci.yml/badge.svg)](https://github.com/jc-morales-dev/NovaClaw/actions/workflows/ci.yml)
+
 **A full coding & phone agent that runs entirely on your Android phone** — the
 phone-native equivalent of Claude Code / Codex. NovaClaw ships an embedded Linux
 (Termux bootstrap) + Node.js inside the APK, and runs its own agent there: it can

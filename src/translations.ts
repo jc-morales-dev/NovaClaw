@@ -38,7 +38,7 @@ export const translations = {
     submitFeedback: 'Submit',
     feedbackSent: 'Feedback sent successfully!',
   },
-  Espanol: {
+  "Español": {
     appName: 'NovaClaw',
     appSubtitle: 'Asistente de IA',
     gatewayDisabled: 'Puerta de enlace en segundo plano desactivada',
@@ -77,7 +77,7 @@ export const translations = {
     submitFeedback: 'Enviar',
     feedbackSent: '¡Comentarios enviados con éxito!',
   },
-  Francais: {
+  "Français": {
     appName: 'NovaClaw',
     appSubtitle: 'Assistant IA',
     gatewayDisabled: "Passerelle d'arriere-plan desactivee",
@@ -118,5 +118,3 @@ export const translations = {
   },
 };
 
-translations['Español'] = translations.Espanol;
-translations['Français'] = translations.Francais;
