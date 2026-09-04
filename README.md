@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/jc-morales-dev/NovaClaw/actions/workflows/ci.yml/badge.svg)](https://github.com/jc-morales-dev/NovaClaw/actions/workflows/ci.yml)
 
+**Status:** `prototype` v0.1 — single-device (OPPO CPH2557). Early on-device Android coding agent; not multi-device production.
+
 **A full coding & phone agent that runs entirely on your Android phone** — the
 phone-native equivalent of Claude Code / Codex. NovaClaw ships an embedded Linux
 (Termux bootstrap) + Node.js inside the APK, and runs its own agent there: it can
