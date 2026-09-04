@@ -9,3 +9,4 @@ Primera versión pública.
 • Login con cuenta de ChatGPT, sin API key.
 • Control de gasto: elegís cuánto piensa el modelo.
 • Servidores MCP para agregar herramientas externas.
+• Todo comando de terminal te pide permiso antes de ejecutarse, y tu API key nunca llega a los comandos que corre.

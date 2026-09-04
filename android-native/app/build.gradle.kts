@@ -31,8 +31,12 @@ android {
         // Escape hatch: para reproducir el camino DIRECT histórico (validado en el
         // OPPO, sin proot), compilá con -Pnovaclaw.targetSdk=28.
         targetSdk = (project.findProperty("novaclaw.targetSdk") as String?)?.toInt() ?: 34
-        versionCode = 2
-        versionName = "0.2.0"
+        // versionCode y versionName son independientes a propósito. El code SOLO
+        // sube: Android se niega a instalar un APK con code menor sobre uno mayor,
+        // así que aunque el nombre visible baje a 0.1.0 (relanzamiento honesto:
+        // esto no lo ha probado nadie más que el autor), el code sigue subiendo.
+        versionCode = 3
+        versionName = "0.1.0"
     }
 
     // Un APK por arquitectura: cada flavor empaqueta SOLO su bootstrap

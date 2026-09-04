@@ -1,7 +1,7 @@
 {
   "name": "novaclaw",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "NovaClaw — a full coding & phone agent that runs entirely on your Android phone (embedded Linux + Node under proot). Phone-native equivalent of Claude Code / Codex, BYOK.",
   "type": "module",
   "scripts": {
@@ -53,5 +53,8 @@
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.3"
+  },
+  "overrides": {
+    "qs": "^6.15.4"
   }
 }

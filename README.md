@@ -17,8 +17,11 @@ phone capabilities (camera, GPS, contacts, calendar) — all on-device, BYOK.
   <a href="docs/media/novaclaw-demo.mp4">novaclaw-demo.mp4</a> (57 s).</em>
 </p>
 
-> **Status: working, signed APK, validated on real hardware** (OPPO CPH2557,
-> Android 15, arm64). Installable by sideload — not on Google Play. Ships at
+> **Status: v0.1.0 — early. Tested by one person, on one phone.** It works and
+> the APK is signed, but the only hardware it has ever run on is a single OPPO
+> CPH2557 (Android 15, arm64), tested by the author. Nobody else has used it
+> yet, so expect rough edges on other devices — and please open an issue when
+> you hit one. Installable by sideload — not on Google Play. Ships at
 > `targetSdk 34`, running the embedded Linux under **proot** (bundled as a
 > native lib) so it executes binaries without root and without depending on the
 > old `targetSdk 28` trick. See [docs/PROOT_TARGETSDK.md](docs/PROOT_TARGETSDK.md).

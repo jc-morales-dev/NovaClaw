@@ -9,3 +9,4 @@ First public release.
 • Sign in with your ChatGPT account, no API key required.
 • Spend control: choose how much the model thinks.
 • MCP servers to plug in external tools.
+• Every shell command asks for your approval before it runs, and your API key never reaches the commands it runs.
