@@ -13,7 +13,7 @@ body:
     id: device
     attributes:
       label: Device manufacturer and model
-      placeholder: OPPO CPH2557
+      placeholder: Brand Model (e.g. Pixel 7)
     validations:
       required: true
   - type: input
