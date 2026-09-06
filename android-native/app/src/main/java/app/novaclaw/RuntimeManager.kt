@@ -18,7 +18,7 @@ import kotlin.concurrent.thread
  *
  *  - DIRECT: se ejecutan los binarios del prefix directamente. Solo funciona si
  *    la app apunta a targetSdk ≤ 28 (Android no impone W^X para esas apps). Es
- *    el camino histórico, validado en el OPPO.
+ *    el camino histórico, validado en Android personal (arm64).
  *
  *  - PROOT: para targetSdk ≥ 29 (Android 10+), donde SELinux bloquea ejecutar
  *    binarios desde el dir de datos (W^X). Se ejecuta todo bajo `proot`, cuyo

@@ -33,7 +33,7 @@ Así el prefix de Termux (node, sh, coreutils, apt…) corre sin tocar `targetSd
 
 | Condición                                   | Modo     | Qué hace |
 |---------------------------------------------|----------|----------|
-| `targetSdk ≤ 28`                            | `DIRECT` | Ejecuta los binarios del prefix directo (camino histórico, validado en el OPPO). |
+| `targetSdk ≤ 28`                            | `DIRECT` | Ejecuta los binarios del prefix directo (camino histórico, validado en Android personal (arm64)). |
 | `targetSdk ≥ 29` y proot empaquetado        | `PROOT`  | Envuelve cada exec con `proot` (binario en `nativeLibraryDir`). |
 | `targetSdk ≥ 29` sin proot                  | `DIRECT` | Fallback con error claro en el log (funcionará en Android ≤ 9, fallará en 10+). |
 
@@ -65,7 +65,7 @@ pwsh scripts/build-android.ps1 -Arch arm64 -Release -- -Pnovaclaw.targetSdk=28
 ```
 
 Genera el APK legacy (targetSdk 28, sin proot, exec directo) idéntico al que ya
-está validado en el OPPO. Útil como red de seguridad mientras se prueba PROOT.
+está validado en Android personal (arm64). Útil como red de seguridad mientras se prueba PROOT.
 
 ## Estado de validación
 
@@ -75,8 +75,8 @@ Verificado en este repo (sin el teléfono):
 - ✅ APK arm64 ensambla (37 MB) con `targetSdkVersion=34` y `extractNativeLibs=true`.
 - ✅ `libproot*.so` quedan dentro del APK en `lib/arm64-v8a/`.
 
-Pendiente (requiere el OPPO — mismo modelo de validación que el resto del proyecto):
-- ⏳ Instalar el APK de 34 en el OPPO (Android 15) y confirmar que
+Pendiente (requiere re-test en Android personal arm64 — mismo modelo de validación que el resto del proyecto):
+- ⏳ Instalar el APK de 34 en un Android personal (Android 15+) y confirmar que
   `RuntimeManager.execModeName()` reporta `PROOT` y que `node --version` corre
   bajo proot. Si algo falla, el escape hatch de targetSdk 28 sigue disponible.
 
