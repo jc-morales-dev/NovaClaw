@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/jc-morales-dev/NovaClaw/actions/workflows/ci.yml/badge.svg)](https://github.com/jc-morales-dev/NovaClaw/actions/workflows/ci.yml)
 
-**Status:** `prototype` v0.1 — single-device (OPPO CPH2557). Early on-device Android coding agent; not multi-device production.
+**Status:** `prototype` v0.1 — Sideload APK for Android (arm64). Not iOS. Author-tested on multiple personal Android phones — not an OEM-certified or production release.
 
 **A full coding & phone agent that runs entirely on your Android phone** — the
 phone-native equivalent of Claude Code / Codex. NovaClaw ships an embedded Linux
@@ -15,7 +15,7 @@ phone capabilities (camera, GPS, contacts, calendar) — all on-device, BYOK.
 </p>
 
 <p align="center">
-  <em>Real footage on an OPPO CPH2557 (Android 15): the agent writes a file,
+  <em>Real footage on a personal Android phone (arm64): the agent writes a file,
   verifies it with <code>node --check</code> and runs it — all inside the
   phone's embedded Linux. Full clip:
   <a href="docs/media/novaclaw-demo.mp4">novaclaw-demo.mp4</a> (57 s).</em>
@@ -33,11 +33,11 @@ phone capabilities (camera, GPS, contacts, calendar) — all on-device, BYOK.
   phone, not a remote shell.</em>
 </p>
 
-> **Status: v0.1.0 — early. Tested by one person, on one phone.** It works and
-> the APK is signed, but the only hardware it has ever run on is a single OPPO
-> CPH2557 (Android 15, arm64), tested by the author. Nobody else has used it
-> yet, so expect rough edges on other devices — and please open an issue when
-> you hit one. Installable by sideload — not on Google Play. Ships at
+> **Status: v0.1.0 — early prototype.** Sideload APK for Android (arm64). Not
+> iOS. Author-tested on multiple personal Android phones — not an OEM-certified
+> or production release. It works and the APK is signed, but expect rough edges
+> on hardware the author has not used — please open an issue when you hit one.
+> Installable by sideload — not on Google Play. Ships at
 > `targetSdk 34`, running the embedded Linux under **proot** (bundled as a
 > native lib) so it executes binaries without root and without depending on the
 > old `targetSdk 28` trick. See [docs/PROOT_TARGETSDK.md](docs/PROOT_TARGETSDK.md).
