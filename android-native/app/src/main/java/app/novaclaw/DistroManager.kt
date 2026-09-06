@@ -21,7 +21,7 @@ import java.security.MessageDigest
  * Una vez instalada la distro, el agente y TODOS los comandos corren adentro de
  * ella (glibc real: bash, node, apt, y cualquier binario que el usuario instale).
  *
- * Validado a mano en un OPPO CPH2557 (Android 15): Ubuntu 24.04.4 (glibc 2.39),
+ * Validado a mano en Android arm64 personal (Android 15): Ubuntu 24.04.4 (glibc 2.39),
  * Node 20.18 (tarball oficial sobre el 18 de apt) corriendo dentro del teléfono.
  */
 class DistroManager(

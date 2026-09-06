@@ -28,8 +28,7 @@ android {
         // Requisito de build: correr scripts/fetch-proot-so.sh para poblar
         // src/main/jniLibs con proot + loader ANTES de compilar el APK de 34.
         //
-        // Escape hatch: para reproducir el camino DIRECT histórico (validado en el
-        // OPPO, sin proot), compilá con -Pnovaclaw.targetSdk=28.
+        // Escape hatch: para reproducir el camino DIRECT histórico (validado en Android personal, sin proot), compilá con -Pnovaclaw.targetSdk=28.
         targetSdk = (project.findProperty("novaclaw.targetSdk") as String?)?.toInt() ?: 34
         // versionCode y versionName son independientes a propósito. El code SOLO
         // sube: Android se niega a instalar un APK con code menor sobre uno mayor,
