@@ -8,10 +8,10 @@ successful build or emulator run is not counted as real-device verification.
 
 | Device | Android | CPU | Tester | APK/build | Bootstrap | Terminal | Agent turn | Phone tools | Evidence |
 |---|---:|---|---|---|---|---|---|---|---|
-| OPPO CPH2557 | 15 | arm64 | Author | v0.1.0 | Pass | Pass | Pass | Author-tested subset | [README demo](../README.md#novaclaw) |
+| Personal Android (arm64) | 8+ / author-tested | arm64 | Author | v0.1.0 | Pass | Pass | Pass | Author-tested subset | [README demo](../README.md#novaclaw) |
 
-Current evidence: **1 tester, 1 physical device, 0 third-party reports.** This
-number should only change when a linked issue contains reproducible evidence.
+Current evidence: **author-tested on multiple personal Android phones, 0 third-party reports.** This
+number should only change when a linked issue contains reproducible evidence. No OEM certification is claimed.
 
 ## What a useful report includes
 
@@ -31,6 +31,6 @@ as useful as a pass: it defines the actual compatibility boundary.
 ## Support policy
 
 - Documented minimum: Android 8+, arm64.
-- Verified today: only the device listed above.
+- Verified today: author-tested on multiple personal Android phones (arm64); see table.
 - Not yet claimed: broad OEM compatibility, tablets, x86, Play Store install,
   unattended operation, or complete coverage of every phone connector.
