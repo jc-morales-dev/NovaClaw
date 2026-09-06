@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/jc-morales-dev/NovaClaw/actions/workflows/ci.yml/badge.svg)](https://github.com/jc-morales-dev/NovaClaw/actions/workflows/ci.yml)
 
-**Status:** `prototype` v0.1 — Sideload APK for Android (arm64). Not iOS. Author-tested on multiple personal Android phones — not an OEM-certified or production release.
+**Status:** Prototype v0.1. Sideload APK for Android (arm64). Not iOS. Author-tested on multiple Android phones.
 
 **A full coding & phone agent that runs entirely on your Android phone** — the
 phone-native equivalent of Claude Code / Codex. NovaClaw ships an embedded Linux
@@ -15,7 +15,7 @@ phone capabilities (camera, GPS, contacts, calendar) — all on-device, BYOK.
 </p>
 
 <p align="center">
-  <em>Real footage on a personal Android phone (arm64): the agent writes a file,
+  <em>Real footage on an Android phone (arm64): the agent writes a file,
   verifies it with <code>node --check</code> and runs it — all inside the
   phone's embedded Linux. Full clip:
   <a href="docs/media/novaclaw-demo.mp4">novaclaw-demo.mp4</a> (57 s).</em>
@@ -33,9 +33,8 @@ phone capabilities (camera, GPS, contacts, calendar) — all on-device, BYOK.
   phone, not a remote shell.</em>
 </p>
 
-> **Status: v0.1.0 — early prototype.** Sideload APK for Android (arm64). Not
-> iOS. Author-tested on multiple personal Android phones — not an OEM-certified
-> or production release. It works and the APK is signed, but expect rough edges
+> **Status:** Prototype v0.1. Sideload APK for Android (arm64). Not iOS.
+> Author-tested on multiple Android phones. It works and the APK is signed, but expect rough edges
 > on hardware the author has not used — please open an issue when you hit one.
 > Installable by sideload — not on Google Play. Ships at
 > `targetSdk 34`, running the embedded Linux under **proot** (bundled as a
